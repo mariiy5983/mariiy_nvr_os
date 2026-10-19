@@ -1,45 +1,53 @@
 # 1.0.0-beta.1
 
-第一個正式測試版目標：**可開機／可安裝的系統**，不是只有網頁。
+第一個正式測試版：**含可開機 ISO**。
 
-## 下載（目前）
+## 下載
 
 | 檔案 | 說明 |
 |------|------|
-| `mariiy_nvr_os-1.0.0-beta.1-install-kit.zip` | 安裝套件（含介面 + `iso/build.sh` + `install-on-debian.sh`） |
-| `mariiy_nvr_os-1.0.0-beta.1-web.zip` | 僅介面預覽 |
+| **`mariiy_nvr_os-1.0.0-beta.1-amd64.iso`** | USB 開機測試系統（約 353 MB） |
+| `…iso.sha256` | 校驗 |
+| `…-install-kit.zip` | 原始碼安裝套件 |
+| `…-web.zip` | 僅瀏覽器介面 |
 
-**ISO 狀態：** 建置腳本與 GitHub Actions 已就緒。自動建 ISO 目前被 GitHub 帳號 **Billing 鎖定**擋下（Actions 無法開工）。本機 Docker／WSL 也因虛擬化未啟用無法建。
+## USB 開機
 
-解除後請到 Actions 跑 **Build ISO**，產出：
+1. 用 [Rufus](https://rufus.ie/)（建議 DD 映像模式）或 `dd` 寫入 USB  
+2. 從 USB 開機（UEFI，x86_64）  
+3. 進入 Alpine 後執行：
 
-- `mariiy_nvr_os-1.0.0-beta.1-amd64.iso`
-- `…iso.sha256`
-
-## 現在就能裝系統的方式
-
-### 1）虛擬機裝 Debian 12 → 轉成 mariiy_nvr_os
-
-```bash
-git clone https://github.com/mariiy5983/mariiy_nvr_os.git
-cd mariiy_nvr_os
-sudo ./iso/install-on-debian.sh
+```sh
+sh /mariiy/bin/mariiy-setup
 mariiy-nvr-kiosk
 ```
 
-### 2）有 Linux／虛擬化時自己建 ISO
+若 `/mariiy` 不在根目錄，改找光碟掛載點，例如：
 
-```bash
-chmod +x iso/build.sh
-./iso/build.sh
+```sh
+sh /media/*/mariiy/bin/mariiy-setup
 ```
 
-詳見 [docs/INSTALL.md](https://github.com/mariiy5983/mariiy_nvr_os/blob/main/docs/INSTALL.md)。
+`mariiy-setup` 需要網路（會裝瀏覽器等套件）。完成後會開 NVR 畫面。
 
-## 這版範圍
+## 裝進硬碟
 
-- 可安裝的系統路徑（Debian 轉系統／ISO 腳本）
-- NVR 介面 kiosk、設定樹、系統資訊
-- `mariiy-install`（ISO 內）寫入硬碟
+Live 內使用 Alpine 工具：
 
-尚未：真實 ONVIF 解碼、錄影管線、內建 cloudflared。
+```sh
+setup-alpine
+```
+
+裝完重開後再執行一次 `mariiy-setup`。
+
+## 這版有
+
+- 可開機 amd64 ISO（Alpine 基底 + Mariiy 介面／安裝腳本）
+- NVR 介面 kiosk
+- 系統資訊、設定樹、遠端 QR 等預覽功能
+
+## 這版還沒有
+
+- 真實 ONVIF／攝影機硬體解碼
+- 一鍵圖形安裝精靈（目前用 Alpine `setup-alpine`）
+- 內建 cloudflared 守護行程

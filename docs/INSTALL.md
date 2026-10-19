@@ -1,24 +1,29 @@
 # 安裝說明（1.0.0-beta.1）
 
-正式測試版應使用 **ISO** 寫入 USB 後開機／安裝。若 Releases 尚無 `.iso`，多半是建置環境未就緒，請用下方備援方式。
-
-## 方式 A：ISO（正式目標）
+## 方式 A：ISO（建議）
 
 1. 下載 `mariiy_nvr_os-1.0.0-beta.1-amd64.iso`
 2. 用 Rufus（DD 模式）或 `dd` 寫入 USB
-3. USB 開機 → 進入 NVR 畫面
-4. 安裝到硬碟：`sudo mariiy-install`，輸入目標碟後打 `YES`
+3. USB 開機後執行：
 
-建置指令（Linux／已啟用虛擬化的環境）：
-
-```bash
-git clone https://github.com/mariiy5983/mariiy_nvr_os.git
-cd mariiy_nvr_os
-chmod +x iso/build.sh
-./iso/build.sh
+```sh
+sh /mariiy/bin/mariiy-setup
+mariiy-nvr-kiosk
 ```
 
-或在 GitHub 開啟 Actions → **Build ISO** → Run workflow（帳號 Actions 需可用）。
+4. 裝進硬碟：Live 內跑 `setup-alpine`，重開後再跑一次 `mariiy-setup`
+
+### 本機重建 ISO（不需 Docker）
+
+Windows 可用 MSYS2：
+
+```bash
+# 已裝 MSYS2 與 xorriso
+cd /c/Users/.../mariiy_nvr_os
+./iso/build-alpine-windows.sh
+```
+
+Linux 仍可用 `./iso/build.sh`（Debian remaster）。
 
 ## 方式 B：在既有 Debian 12 上安裝成系統
 

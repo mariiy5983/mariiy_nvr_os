@@ -1,8 +1,0 @@
-#!/bin/sh
-for p in /media/*/mariiy/bin/mariiy-firstboot /mariiy/bin/mariiy-firstboot; do
-  if [ -x "$p" ]; then
-    exec "$p" >>/var/log/mariiy-firstboot.log 2>&1
-  fi
-done
-echo "mariiy-firstboot not found" >>/var/log/mariiy-firstboot.log
-exit 1

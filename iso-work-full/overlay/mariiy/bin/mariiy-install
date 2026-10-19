@@ -1,0 +1,77 @@
+#!/bin/sh
+# Install live Mariiy NVR system onto a disk (UEFI).
+set -e
+VERSION="$(cat /etc/mariiy_nvr_os-version 2>/dev/null || echo unknown)"
+echo "============================================"
+echo " Mariiy NVR 硬碟安裝  ${VERSION}"
+echo "============================================"
+echo "警告：目標碟分割表會被重建，資料會消失。"
+echo
+lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL
+echo
+printf "目標裝置（例 /dev/sda 或 /dev/nvme0n1）: "
+read -r DISK
+[ -b "$DISK" ] || { echo "不是區塊裝置"; exit 1; }
+printf "確定寫入 %s？請輸入 YES: " "$DISK"
+read -r OK
+[ "$OK" = "YES" ] || { echo "已取消"; exit 1; }
+
+apk add --allow-untrusted --force-non-repository /mariiy/apks/sgdisk*.apk /mariiy/apks/e2fsprogs*.apk /mariiy/apks/dosfstools*.apk 2>/dev/null || true
+
+sgdisk --zap-all "$DISK"
+sgdisk -n 1:0:+512M -t 1:ef00 -c 1:EFI "$DISK"
+sgdisk -n 2:0:0 -t 2:8300 -c 2:ROOT "$DISK"
+partprobe "$DISK" 2>/dev/null || true
+sleep 2
+if [ -b "${DISK}p1" ]; then P1="${DISK}p1"; P2="${DISK}p2"; else P1="${DISK}1"; P2="${DISK}2"; fi
+
+mkfs.vfat -F32 -n EFI "$P1"
+mkfs.ext4 -F -L MARIIY_ROOT "$P2"
+mkdir -p /mnt/target /mnt/efi
+mount "$P2" /mnt/target
+mount "$P1" /mnt/efi
+
+# copy running system
+rsync -aHAX --info=progress2 \
+  --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run \
+  --exclude=/mnt --exclude=/tmp --exclude=/media \
+  / /mnt/target/
+
+mkdir -p /mnt/target/{proc,sys,dev,run,tmp,boot/efi,var/lib/mariiy_nvr_os}
+# ensure UI + tools present
+mkdir -p /mnt/target/usr/share/mariiy_nvr_os
+cp -a /usr/share/mariiy_nvr_os/web /mnt/target/usr/share/mariiy_nvr_os/ 2>/dev/null || cp -a /mariiy/web /mnt/target/usr/share/mariiy_nvr_os/
+cp -f /usr/sbin/mariiy-nvr-kiosk /mnt/target/usr/sbin/
+cp -f /usr/sbin/mariiy-install /mnt/target/usr/sbin/
+cp -f /mariiy/bin/mariiy-firstboot /mnt/target/usr/sbin/mariiy-firstboot
+chmod 755 /mnt/target/usr/sbin/mariiy-nvr-kiosk /mnt/target/usr/sbin/mariiy-install /mnt/target/usr/sbin/mariiy-firstboot
+touch /mnt/target/var/lib/mariiy_nvr_os/ready
+echo "$VERSION" >/mnt/target/etc/mariiy_nvr_os-version
+
+UUID_ROOT="$(blkid -s UUID -o value "$P2")"
+UUID_EFI="$(blkid -s UUID -o value "$P1")"
+cat >/mnt/target/etc/fstab <<FEOF
+UUID=${UUID_ROOT} / ext4 defaults,noatime 0 1
+UUID=${UUID_EFI} /boot/efi vfat umask=0077 0 1
+FEOF
+
+mount --bind /dev /mnt/target/dev
+mount --bind /proc /mnt/target/proc
+mount --bind /sys /mnt/target/sys
+mount --bind /mnt/efi /mnt/target/boot/efi
+chroot /mnt/target /bin/sh -c '
+  apk add grub grub-efi efibootmgr 2>/dev/null || true
+  grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=mariiy_nvr_os --recheck
+  grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true
+'
+# fallback EFI stub if grub-mkconfig missing
+mkdir -p /mnt/efi/EFI/BOOT
+if [ -f /mnt/target/boot/grub/x86_64-efi/core.efi ]; then
+  cp -f /mnt/target/usr/lib/grub/x86_64-efi/core.efi /mnt/efi/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
+fi
+
+umount /mnt/target/boot/efi 2>/dev/null || true
+umount /mnt/target/sys /mnt/target/proc /mnt/target/dev 2>/dev/null || true
+umount /mnt/efi /mnt/target 2>/dev/null || true
+echo
+echo "安裝完成。請拔除 USB 後重新開機，系統會自動進入 Mariiy NVR。"

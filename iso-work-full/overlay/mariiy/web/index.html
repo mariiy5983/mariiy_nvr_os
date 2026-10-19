@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mariiy NVR</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <span id="deviceName">Mariiy NVR</span>
+        <span class="version" id="versionLabel">1.0.0-beta.2</span>
+        <em id="screenName">預覽</em>
+      </div>
+      <div class="current" id="current"></div>
+      <div class="status">
+        <button type="button" class="status-btn" id="alarmBtn" title="跳至警報通道">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16h12l-1.2-2V11a4.8 4.8 0 0 0-9.6 0v3L6 16z"/><path d="M10 18a2 2 0 0 0 4 0"/></svg>
+          <span class="badge" id="alarmCount">0</span>
+        </button>
+        <button type="button" class="pill" id="remotePill" title="遠端設定">
+          <i class="dot ok" id="remoteDot"></i>遠端
+        </button>
+        <span class="pill"><i class="dot ok"></i>網路</span>
+        <button type="button" class="pill" id="diskPill" title="錄影碟">
+          <i class="dot ok" id="diskDot"></i>硬碟
+        </button>
+        <time class="clock" id="clock"></time>
+      </div>
+    </header>
+
+    <div class="stage">
+      <div class="wall" id="wall" data-layout="16"></div>
+      <section class="page hidden" id="page"></section>
+      <aside class="ptz hidden" id="ptz" aria-label="雲台">
+        <div>
+          <h2>雲台</h2>
+          <div class="sub" id="ptzTitle"></div>
+        </div>
+        <div class="dpad">
+          <button type="button" class="pad up" data-ptz="向上" aria-label="向上">↑</button>
+          <button type="button" class="pad left" data-ptz="向左" aria-label="向左">←</button>
+          <button type="button" class="pad home" data-ptz="復位">復位</button>
+          <button type="button" class="pad right" data-ptz="向右" aria-label="向右">→</button>
+          <button type="button" class="pad down" data-ptz="向下" aria-label="向下">↓</button>
+        </div>
+        <div class="label">變倍</div>
+        <div class="row">
+          <button type="button" class="pad grow" data-ptz="變倍縮小">−</button>
+          <button type="button" class="pad grow" data-ptz="變倍放大">+</button>
+        </div>
+        <div class="label">聚焦</div>
+        <div class="row">
+          <button type="button" class="pad grow" data-ptz="聚焦近">近</button>
+          <button type="button" class="pad grow" data-ptz="聚焦遠">遠</button>
+        </div>
+        <div class="label">預置點</div>
+        <div class="presets" id="presets"></div>
+        <button type="button" class="pad close-ptz" id="ptzClose">關閉</button>
+      </aside>
+    </div>
+
+    <footer class="toolbar">
+      <div class="bar-slot" id="liveTools">
+      <div class="group" id="splits" role="group" aria-label="分割"></div>
+      <i class="sep"></i>
+      <div class="group">
+        <button type="button" class="tool icon-only" id="prevBtn" aria-label="上一頁">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5 L8 12 L14 19"/></svg>
+        </button>
+        <span class="page-label" id="pageLabel">1 / 2</span>
+        <button type="button" class="tool icon-only" id="nextBtn" aria-label="下一頁">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5 L16 12 L10 19"/></svg>
+        </button>
+      </div>
+      <i class="sep"></i>
+      <div class="group">
+        <button type="button" class="tool stack" id="tourBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></svg>
+          <span>輪巡</span>
+        </button>
+        <button type="button" class="tool stack" id="audioBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10h3l4-3v10l-4-3H4z"/><path d="M16 9a4 4 0 0 1 0 6"/></svg>
+          <span>聲音</span>
+        </button>
+        <button type="button" class="tool stack" id="ptzBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18"/><path d="M12 3l-2 2.2M12 3l2 2.2M12 21l-2-2.2M12 21l2-2.2M3 12l2.2-2M3 12l2.2 2M21 12l-2.2-2M21 12l-2.2 2"/></svg>
+          <span>雲台</span>
+        </button>
+        <button type="button" class="tool stack" id="shotBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="12" height="10" rx="1.4"/><path d="M15 11l6-3v8l-6-3z"/></svg>
+          <span>抓圖</span>
+        </button>
+      </div>
+      <div class="hint">雙擊單畫面 · 右鍵選單 · 方向鍵翻頁 · Esc 返回</div>
+      </div>
+      <div class="bar-slot hidden" id="pageTools">
+        <button type="button" class="tool back-live" id="backLive">返回預覽</button>
+        <div class="hint" id="pageHint"></div>
+      </div>
+      <button type="button" class="tool stack" id="menuBtn">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        <span>選單</span>
+      </button>
+    </footer>
+  </div>
+
+  <div class="overlay hidden" id="menu">
+    <div class="menu-card">
+      <div class="menu-title">主選單</div>
+      <div class="menu-grid">
+        <button type="button" class="menu-item on" id="goLive">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>
+          預覽
+        </button>
+        <button type="button" class="menu-item" id="goPlayback">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l12-7z"/></svg>
+          回放
+        </button>
+        <button type="button" class="menu-item" id="goPictures">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M3 16l5-4 4 3 3-2 6 4"/></svg>
+          圖片
+        </button>
+        <button type="button" class="menu-item" id="goSettings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></svg>
+          設定
+        </button>
+        <button type="button" class="menu-item" id="goPower">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8"/><path d="M7 6.2a8 8 0 1 0 10 0"/></svg>
+          關機
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay hidden" id="confirm">
+    <div class="dialog" role="alertdialog" aria-labelledby="confirmTitle">
+      <h2 id="confirmTitle">關閉主機</h2>
+      <p id="confirmText">確定要關閉 Mariiy NVR？</p>
+      <div class="dialog-actions">
+        <button type="button" class="primary" id="confirmOk">確定</button>
+        <button type="button" class="ghost" id="confirmCancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay hidden" id="viewer">
+    <div class="viewer-card">
+      <div class="viewer-frame" id="viewerFrame"></div>
+      <div class="viewer-meta" id="viewerMeta"></div>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="viewerDelete">刪除</button>
+        <button type="button" class="primary" id="viewerClose">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay wizard hidden" id="wizard"></div>
+  <div class="overlay lock hidden" id="lock"></div>
+  <div class="overlay firmware hidden" id="firmware">
+    <div class="dialog" role="status">
+      <h2>更新韌體</h2>
+      <p id="firmwareText">正在寫入 mariiy_nvr_os</p>
+      <div class="meter"><i id="firmwareBar"></i></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="qrcode.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

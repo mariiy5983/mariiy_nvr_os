@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+WEB=/usr/share/mariiy_nvr_os/web
+[ -f "$WEB/index.html" ] || WEB=/mariiy/web
+cd "$WEB"
+if [ ! -f /tmp/mariiy-http.pid ] || ! kill -0 "$(cat /tmp/mariiy-http.pid)" 2>/dev/null; then
+  python3 -m http.server 8765 --bind 127.0.0.1 >/tmp/mariiy-http.log 2>&1 &
+  echo $! >/tmp/mariiy-http.pid
+  sleep 1
+fi
+URL=http://127.0.0.1:8765/
+export DISPLAY="${DISPLAY:-:0}"
+export MOZ_USE_XINPUT2=1
+if command -v firefox >/dev/null 2>&1; then
+  exec firefox --kiosk --width=1920 --height=1080 "$URL"
+fi
+exec python3 -m webbrowser "$URL"

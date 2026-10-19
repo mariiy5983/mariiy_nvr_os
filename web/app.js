@@ -63,7 +63,7 @@ const ZONES = [
 ];
 const STORE_KEY = "nvr-setup";
 const GOOGLE_NTP = "time.google.com";
-const VERSION = "1.0.0-beta.1";
+const VERSION = "1.0.0-beta.2";
 const OS_NAME = "mariiy_nvr_os";
 const GITHUB = "https://github.com/mariiy5983/mariiy_nvr_os";
 const LICENSE = "GPLv3";

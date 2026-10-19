@@ -10,18 +10,17 @@
 | 授權 | GPLv3 |
 | 目標硬體 | Intel N100 / N95（VAAPI） |
 
-## 1.0.0-beta.1 正式測試版
+## 1.0.0-beta.2 完整測試版
 
-發行頁：https://github.com/mariiy5983/mariiy_nvr_os/releases/tag/1.0.0-beta.1
+發行頁：https://github.com/mariiy5983/mariiy_nvr_os/releases/tag/1.0.0-beta.2
 
 | 檔案 | 用途 |
 |------|------|
-| `mariiy_nvr_os-1.0.0-beta.1-amd64.iso` | USB 開機測試系統 |
+| `mariiy_nvr_os-1.0.0-beta.2-amd64.iso` | **一個 ISO**：開機自動進 NVR，可裝硬碟 |
 | `…iso.sha256` | 校驗 |
-| `…-web.zip` | 僅瀏覽器預覽介面 |
 
-Rufus 寫入 USB → 開機 → `sh /mariiy/bin/mariiy-setup` → `mariiy-nvr-kiosk`。  
-硬碟安裝用 Alpine 的 `setup-alpine`。影像解碼與 Tunnel 守護在後續版本。
+Rufus（DD）寫入 USB → 開機 → 自動進入介面 → `mariiy-install` 裝進硬碟。  
+真實攝影機 ONVIF／硬體解碼在下一版。
 
 ## 本機只看介面
 

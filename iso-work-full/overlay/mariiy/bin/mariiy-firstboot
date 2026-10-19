@@ -1,0 +1,63 @@
+#!/bin/sh
+# Offline package install + graphical NVR autostart
+set -e
+VERSION="1.0.0-beta.2"
+FLAG=/var/lib/mariiy_nvr_os/ready
+mkdir -p /var/lib/mariiy_nvr_os /usr/share/mariiy_nvr_os
+
+# locate media
+MEDIA=""
+for p in /mariiy /media/*/mariiy /media/cdrom/mariiy; do
+  if [ -f "$p/web/index.html" ]; then MEDIA="$p"; break; fi
+done
+[ -n "$MEDIA" ] || MEDIA=/mariiy
+
+cp -a "$MEDIA/web" /usr/share/mariiy_nvr_os/
+cp -f "$MEDIA/bin/mariiy-nvr-kiosk" /usr/sbin/mariiy-nvr-kiosk
+cp -f "$MEDIA/bin/mariiy-install" /usr/sbin/mariiy-install
+chmod 755 /usr/sbin/mariiy-nvr-kiosk /usr/sbin/mariiy-install
+echo "$VERSION" >/etc/mariiy_nvr_os-version
+echo "mariiy-nvr" >/etc/hostname
+hostname mariiy-nvr 2>/dev/null || true
+
+if [ ! -f "$FLAG" ]; then
+  echo "[mariiy] installing offline packages..."
+  # shellcheck disable=SC2046
+  apk add --allow-untrusted --force-non-repository $(ls "$MEDIA"/apks/*.apk)
+  touch "$FLAG"
+fi
+
+# X11 + openbox session
+mkdir -p /root
+cat >/root/.xinitrc <<'XEOF'
+#!/bin/sh
+xset -dpms 2>/dev/null || true
+xset s off 2>/dev/null || true
+openbox &
+sleep 1
+exec /usr/sbin/mariiy-nvr-kiosk
+XEOF
+chmod 755 /root/.xinitrc
+
+mkdir -p /etc/conf.d
+cat >/etc/conf.d/agetty.tty1 <<'AEOF'
+agetty_options="--autologin root --noclear"
+AEOF
+rc-update add agetty.tty1 default 2>/dev/null || true
+
+grep -q mariiy-nvr-startx /root/.profile 2>/dev/null || cat >>/root/.profile <<'PEOF'
+
+# mariiy-nvr-startx
+if [ -z "$DISPLAY" ] && [ -z "$SSH_CONNECTION" ]; then
+  case "$(tty 2>/dev/null)" in
+    /dev/tty1|/dev/console) exec startx ;;
+  esac
+fi
+PEOF
+
+echo "[mariiy] ${VERSION} ready — starting UI"
+export HOME=/root
+cd /root
+if ! pidof Xorg >/dev/null 2>&1 && ! pidof X >/dev/null 2>&1; then
+  setsid startx >>/var/log/mariiy-x.log 2>&1 &
+fi

@@ -1,0 +1,13 @@
+# Default template — agent overwrites /etc/mariiy_nvr_os/go2rtc.yaml
+api:
+  listen: ":1984"
+  origin: "*"
+rtsp:
+  listen: ":8554"
+webrtc:
+  listen: ":8555"
+ffmpeg:
+  bin: ffmpeg
+  hwaccel: vaapi
+  hwaccel_device: /dev/dri/renderD128
+streams: {}

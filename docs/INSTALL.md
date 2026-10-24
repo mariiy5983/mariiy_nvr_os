@@ -1,21 +1,25 @@
-# 安裝說明（1.0.0-beta.2）
+# 安裝指南 (1.0.0)
 
-## 一個 ISO 完整安裝
+## 1. 下載安裝檔
 
-1. 下載 `mariiy_nvr_os-1.0.0-beta.2-amd64.iso`
-2. Rufus → DD 映像模式 → 寫入 USB
-3. USB 開機，等待自動進入 NVR
-4. 硬碟安裝：`mariiy-install` → 輸入裝置 → `YES`
-5. 拔掉 USB 重開，系統會自動進 NVR
+從 [GitHub Releases](https://github.com/mariiy5983/mariiy_nvr_os/releases/tag/1.0.0) 下載：
 
-## 本機重建 ISO（不需 Docker）
+- `mariiy_nvr_os-1.0.0-amd64-installer.iso`
+- `mariiy_nvr_os-1.0.0-amd64-installer.iso.sha256`
 
-Windows + MSYS2：
+## 2. 安裝步驟
+
+1. **實體機（Intel N100 / N95 等 x86_64 主機）**：使用 Rufus 以 **DD 模式** 寫入隨身碟，從 USB 開機。
+2. **VMware Workstation / ESXi**：
+   - 新增虛擬硬碟（建議系統碟 16 GB 以上，可額外掛載第二顆硬碟作為錄影碟）。
+   - 將 ISO 掛載至 CD/DVD，勾選 **Connect at power on**，並從光碟開機。
+3. 進入安裝畫面（確認顯示版本 **1.0.0**）：
+   - 預設會自動選取第一顆／最小容量的硬碟作為**系統碟**（保留大容量硬碟作為錄影碟）。
+   - 直接按 **Enter** 開始安裝，或輸入磁碟編號（例如 `1`、`2`）指定目標硬碟。
+4. 畫面顯示 `[6/6] DONE (1.0.0)` 與 `Install Complete!` 後，按 **Enter** 會自動退出光碟並重新啟動進入 Mariiy NVR。
+
+## 3. 重新建置 ISO（Windows + MSYS2 或 Linux）
 
 ```bash
-cd /c/Users/.../mariiy_nvr_os
-# 第一次會下載 Alpine 與 APK
-./iso/build-appliance.sh
+./iso/build-installer.sh
 ```
-
-產出：`dist/mariiy_nvr_os-<version>-amd64.iso`

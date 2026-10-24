@@ -1,0 +1,563 @@
+#!/bin/sh
+# Install a CLEAN Alpine + Mariiy NVR system to $1.
+set -e
+DISK="$1"
+VERSION="${MARIIY_VERSION:-1.0.0}"
+
+die() { echo "ERROR: $*"; exit 1; }
+
+MEDIA="${MARIIY_MEDIA:-}"
+if [ -z "$MEDIA" ] || [ ! -d "$MEDIA/web" ]; then
+  MEDIA=""
+  for p in /media/cdrom/mariiy /mariiy /media/*/mariiy; do
+    if [ -d "$p/web" ]; then MEDIA="$p"; break; fi
+  done
+fi
+[ -n "$MEDIA" ] || die "install media not found"
+[ -b "$DISK" ] || die "not a block device: $DISK"
+
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+APKDIR="$MEDIA/apks"
+[ -d "$APKDIR" ] || die "offline apks missing at $MEDIA/apks"
+
+apk_add_files() {
+  LIST="$1"
+  [ -s "$LIST" ] || die "apk list empty: $LIST"
+  # shellcheck disable=SC2046
+  apk add --allow-untrusted --force-non-repository $(cat "$LIST")
+}
+
+match_apks() {
+  out="$1"
+  : >"$out"
+  shift
+  for pat in "$@"; do
+    for f in "$APKDIR"/${pat}*.apk; do
+      [ -f "$f" ] || continue
+      case "$f" in
+        *-doc-*|*-dev-*|*-static-*) continue ;;
+      esac
+      echo "$f" >>"$out"
+    done
+  done
+}
+
+echo "[0/6] Installing partition & filesystem tools..."
+TOOLS=/tmp/mariiy-tool-apks.txt
+match_apks "$TOOLS" \
+  gptfdisk- dosfstools- e2fsprogs- e2fsprogs-extra- e2fsprogs-libs- \
+  blkid- lsblk- partx- util-linux- rsync- \
+  libstdc++- libgcc- libuuid- libblkid- libeconf- libcom_err- \
+  libncursesw- ncurses-terminfo-base- popt- lz4-libs- zstd-libs- \
+  acl-libs- libxxhash- zlib- libsmartcols- libmount-
+apk_add_files "$TOOLS" || die "apk add tools failed"
+
+GDISK=$(command -v gdisk || true)
+MKFS_VFAT=$(command -v mkfs.vfat || true)
+MKE2FS=$(command -v mke2fs || true)
+[ -n "$GDISK" ] || die "gdisk missing"
+[ -n "$MKFS_VFAT" ] || die "mkfs.vfat missing"
+[ -n "$MKE2FS" ] || MKE2FS=$(command -v mkfs.ext4 || true)
+[ -n "$MKE2FS" ] || die "mke2fs missing"
+
+echo "Media:  $MEDIA"
+echo "Target: $DISK"
+
+# Unmount anything mounted from target disk
+umount /mnt/target/boot/efi /mnt/target /mnt/efi 2>/dev/null || true
+for mp in $(awk -v d="$DISK" '$1 ~ "^"d {print $2}' /proc/mounts 2>/dev/null); do
+  umount "$mp" 2>/dev/null || true
+done
+
+echo "[1/6] Partitioning $DISK ..."
+OLD_HOTPLUG=""
+if [ -w /proc/sys/kernel/hotplug ]; then
+  OLD_HOTPLUG=$(cat /proc/sys/kernel/hotplug 2>/dev/null || true)
+  printf '' >/proc/sys/kernel/hotplug
+fi
+killall mdev 2>/dev/null || true
+
+$GDISK "$DISK" <<'EOF'
+o
+y
+n
+1
+
++2M
+ef02
+n
+2
+
++512M
+ef00
+n
+3
+
+
+8300
+w
+y
+EOF
+
+sync
+blockdev --rereadpt "$DISK" 2>/dev/null || true
+partx -u "$DISK" 2>/dev/null || true
+sleep 1
+
+DISK_BASE=$(basename "$DISK")
+parentsys="/sys/block/${DISK_BASE}/dev"
+[ -r "$parentsys" ] || die "no $parentsys"
+MAJ=$(cut -d: -f1 "$parentsys")
+MIN0=$(cut -d: -f2 "$parentsys")
+
+case "$DISK_BASE" in
+  nvme*|mmcblk*|loop*)
+    P1="${DISK}p1"
+    P2="${DISK}p2"
+    P3="${DISK}p3"
+    ;;
+  *)
+    P1="${DISK}1"
+    P2="${DISK}2"
+    P3="${DISK}3"
+    ;;
+esac
+
+make_parts() {
+  rm -f "$P1" "$P2" "$P3"
+  mknod "$P1" b "$MAJ" $((MIN0 + 1)) || die "mknod $P1 failed"
+  mknod "$P2" b "$MAJ" $((MIN0 + 2)) || die "mknod $P2 failed"
+  mknod "$P3" b "$MAJ" $((MIN0 + 3)) || die "mknod $P3 failed"
+}
+
+make_parts
+[ -b "$P1" ] && [ -b "$P2" ] && [ -b "$P3" ] || die "partition nodes missing"
+echo "  partitions: $P1 (bios_grub) $P2 (efi) $P3 (root)"
+
+echo "[2/6] Formatting..."
+for m in crc32c mbcache jbd2 ext4 nls_cp437 nls_iso8859-1 fat vfat; do
+  modprobe "$m" 2>/dev/null || true
+done
+grep -q ext4 /proc/filesystems || die "kernel has no ext4 (modprobe failed)"
+
+make_parts
+$MKFS_VFAT -F 32 -n EFI "$P2" || die "mkfs.vfat $P2 failed"
+n=0
+while [ "$n" -lt 8 ]; do
+  make_parts
+  if command -v mke2fs >/dev/null 2>&1; then
+    mke2fs -t ext4 -F -L MARIIY_ROOT -O ^orphan_file "$P3" && break
+  else
+    $MKE2FS -F -L MARIIY_ROOT "$P3" && break
+  fi
+  echo "  retry format $P3 ($((n + 1))/8)..."
+  blockdev --rereadpt "$DISK" 2>/dev/null || true
+  sleep 1
+  n=$((n + 1))
+done
+[ "$n" -lt 8 ] || die "mke2fs $P3 failed"
+sync
+
+ROOT_UUID=""
+EFI_UUID=""
+if command -v blkid >/dev/null 2>&1; then
+  ROOT_UUID=$(blkid -s UUID -o value "$P3" 2>/dev/null || true)
+  EFI_UUID=$(blkid -s UUID -o value "$P2" 2>/dev/null || true)
+fi
+echo "  ROOT_UUID=${ROOT_UUID:-none} EFI_UUID=${EFI_UUID:-none}"
+
+mkdir -p /mnt/target /mnt/efi
+make_parts
+if ! mount -t ext4 -o rw,noatime "$P3" /mnt/target; then
+  echo "ERROR: mount -t ext4 $P3 /mnt/target failed"
+  dmesg | tail -n 25
+  die "mount root failed"
+fi
+if ! mount -t vfat -o rw "$P2" /mnt/efi; then
+  echo "ERROR: mount -t vfat $P2 /mnt/efi failed"
+  dmesg | tail -n 15
+  die "mount efi failed"
+fi
+if [ -n "$OLD_HOTPLUG" ] && [ -w /proc/sys/kernel/hotplug ]; then
+  echo "$OLD_HOTPLUG" >/proc/sys/kernel/hotplug
+fi
+
+echo "[3/6] Installing Alpine packages onto disk..."
+# Prepare /dev, /proc, /sys, /boot/efi BEFORE apk add so package triggers
+# (mkinitfs, dbus-uuidgen, etc.) run cleanly inside the target root.
+mkdir -p /mnt/target/proc /mnt/target/sys /mnt/target/dev /mnt/target/run /mnt/target/tmp
+mkdir -p /mnt/target/etc/apk /mnt/target/boot/efi /mnt/target/var/lock
+chmod 1777 /mnt/target/tmp
+# Prevent grub.trigger from running update-grub before grub.cfg/fstab are ready
+echo "disable_trigger=1" >/mnt/target/etc/update-grub.conf
+mount --bind /dev /mnt/target/dev
+mount --bind /proc /mnt/target/proc
+mount --bind /sys /mnt/target/sys
+mount --bind /mnt/efi /mnt/target/boot/efi
+
+if [ -d /etc/apk/keys ]; then
+  mkdir -p /mnt/target/etc/apk/keys
+  cp -a /etc/apk/keys/. /mnt/target/etc/apk/keys/ 2>/dev/null || true
+fi
+
+APK_DISK=/tmp/mariiy-disk-apks.txt
+: >"$APK_DISK"
+for f in "$APKDIR"/*.apk; do
+  [ -f "$f" ] || continue
+  b=$(basename "$f")
+  case "$b" in
+    linux-firmware-none-*|linux-firmware-i915-*|linux-firmware-xe-*) ;;
+    linux-firmware-*) continue ;;
+    xf86-video-vmware-*) continue ;;
+  esac
+  echo "$f" >>"$APK_DISK"
+done
+echo "  packages: $(wc -l <"$APK_DISK" | tr -d ' ')"
+# shellcheck disable=SC2046
+apk add --root /mnt/target --initdb --allow-untrusted --force-non-repository \
+  $(cat "$APK_DISK") || true
+[ -x /mnt/target/bin/busybox ] && [ -x /mnt/target/usr/bin/Xorg ] || die "apk install to disk failed"
+
+mkdir -p /mnt/target/usr/share/mariiy_nvr_os
+mkdir -p /mnt/target/var/lib/mariiy_nvr_os/recordings /mnt/target/var/lib/mariiy_nvr_os/snapshots
+mkdir -p /mnt/target/etc/mariiy_nvr_os
+mkdir -p /mnt/target/etc/init.d /mnt/target/etc/local.d /mnt/target/usr/sbin /mnt/target/usr/bin
+
+echo "[4/6] Copying Mariiy NVR files..."
+cp -a "$MEDIA/web" /mnt/target/usr/share/mariiy_nvr_os/
+cp -a "$MEDIA/agent" /mnt/target/usr/share/mariiy_nvr_os/
+cp -a "$MEDIA/packaging" /mnt/target/usr/share/mariiy_nvr_os/
+if [ -d "$MEDIA/wheels" ]; then
+  cp -a "$MEDIA/wheels" /mnt/target/usr/share/mariiy_nvr_os/wheels
+fi
+cp -f "$MEDIA/packaging/go2rtc.yaml" /mnt/target/etc/mariiy_nvr_os/go2rtc.yaml
+cp -f "$MEDIA/bin/mariiy-nvr-kiosk" /mnt/target/usr/sbin/mariiy-nvr-kiosk
+cp -f "$MEDIA/bin/mariiy-agent-start" /mnt/target/usr/sbin/mariiy-agent-start
+cp -f "$MEDIA/bin/mariiy-session" /mnt/target/usr/sbin/mariiy-session
+chmod 755 /mnt/target/usr/sbin/mariiy-nvr-kiosk /mnt/target/usr/sbin/mariiy-agent-start /mnt/target/usr/sbin/mariiy-session
+
+if [ -f "$MEDIA/bin/go2rtc" ]; then
+  cp -f "$MEDIA/bin/go2rtc" /mnt/target/usr/bin/go2rtc
+  chmod 755 /mnt/target/usr/bin/go2rtc
+fi
+
+if [ -d "$MEDIA/packaging/openrc" ]; then
+  for svc in mariiy-agent mariiy-go2rtc mariiy-ui; do
+    [ -f "$MEDIA/packaging/openrc/$svc" ] || continue
+    cp -f "$MEDIA/packaging/openrc/$svc" /mnt/target/etc/init.d/$svc
+    chmod 755 /mnt/target/etc/init.d/$svc
+  done
+fi
+
+echo "$VERSION" >/mnt/target/etc/mariiy_nvr_os-version
+echo "mariiy-nvr" >/mnt/target/etc/hostname
+touch /mnt/target/etc/mariiy_nvr_os/installed
+
+if [ -n "$ROOT_UUID" ]; then
+  ROOT_SPEC="UUID=${ROOT_UUID}"
+else
+  ROOT_SPEC="$P3"
+fi
+if [ -n "$EFI_UUID" ]; then
+  EFI_SPEC="UUID=${EFI_UUID}"
+else
+  EFI_SPEC="LABEL=EFI"
+fi
+
+cat >/mnt/target/etc/fstab <<EOF
+${ROOT_SPEC}	/	ext4	rw,noatime	0 1
+${EFI_SPEC}	/boot/efi	vfat	rw,nofail,umask=0077	0 2
+tmpfs	/tmp	tmpfs	nosuid,nodev,mode=1777	0 0
+tmpfs	/dev/shm	tmpfs	nosuid,nodev,mode=1777	0 0
+EOF
+ln -sf /proc/self/mounts /mnt/target/etc/mtab
+
+[ -f /etc/resolv.conf ] && cp -f /etc/resolv.conf /mnt/target/etc/resolv.conf || true
+
+echo "[5/6] Configuring bootloader, services, and graphical kiosk..."
+cat >/mnt/target/tmp/setup-chroot.sh <<'CHROOT_EOF'
+#!/bin/sh
+set -e
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+DISK="$1"
+ROOT_UUID="$2"
+
+mkdir -p /etc/mkinitfs
+cat >/etc/mkinitfs/mkinitfs.conf <<'MKCONF'
+features="ata base cdrom ext4 keymap kms mmc nvme raid scsi usb virtio"
+MKCONF
+
+KVER=$(ls -1 /lib/modules 2>/dev/null | head -n 1)
+echo "  kernel modules: $KVER"
+if command -v mkinitfs >/dev/null && [ -n "$KVER" ]; then
+  mkinitfs -c /etc/mkinitfs/mkinitfs.conf "$KVER"
+fi
+VMLINUZ=$(ls -1 /boot/vmlinuz-lts /boot/vmlinuz-* 2>/dev/null | head -n 1)
+INITRD=$(ls -1 /boot/initramfs-lts /boot/initramfs-* 2>/dev/null | head -n 1)
+[ -n "$VMLINUZ" ] && [ -s "$VMLINUZ" ] || { echo "ERROR: no kernel in /boot"; exit 1; }
+[ -n "$INITRD" ] && [ -s "$INITRD" ] || { echo "ERROR: no initramfs in /boot"; exit 1; }
+VMLINUZ_BASE=$(basename "$VMLINUZ")
+INITRD_BASE=$(basename "$INITRD")
+
+mkdir -p /boot/grub /boot/efi/EFI/BOOT /etc/default
+if [ -n "$ROOT_UUID" ]; then
+  GRUB_SEARCH="search --no-floppy --fs-uuid --set=root ${ROOT_UUID}"
+  ROOT_ARG="root=UUID=${ROOT_UUID}"
+else
+  GRUB_SEARCH="search --no-floppy --label --set=root MARIIY_ROOT"
+  ROOT_ARG="root=LABEL=MARIIY_ROOT"
+fi
+
+cat >/boot/grub/grub.cfg <<GCFG
+set default=0
+set timeout=2
+insmod part_gpt
+insmod part_msdos
+insmod ext2
+insmod fat
+insmod gzio
+${GRUB_SEARCH}
+menuentry "Mariiy NVR" {
+	linux /boot/${VMLINUZ_BASE} ${ROOT_ARG} rootfstype=ext4 rootflags=rw rw console=tty0
+	initrd /boot/${INITRD_BASE}
+}
+GCFG
+cp -f /boot/grub/grub.cfg /boot/efi/EFI/BOOT/grub.cfg 2>/dev/null || true
+
+BIOS_OK=0
+EFI_OK=0
+if command -v grub-install >/dev/null; then
+  if grub-install --target=i386-pc --force --recheck "$DISK" 2>/tmp/grub-bios.log; then
+    BIOS_OK=1
+    echo "  BIOS grub: ok"
+  else
+    echo "  BIOS grub: failed"
+    cat /tmp/grub-bios.log 2>/dev/null || true
+  fi
+  if grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=mariiy --removable --no-nvram --recheck 2>/tmp/grub-efi.log; then
+    EFI_OK=1
+    echo "  EFI grub: ok"
+    # Also try registering in NVRAM when booted under UEFI
+    if [ -d /sys/firmware/efi ]; then
+      grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=mariiy --removable --recheck >/dev/null 2>&1 || true
+    fi
+  else
+    echo "  EFI grub: failed"
+    cat /tmp/grub-efi.log 2>/dev/null || true
+  fi
+else
+  echo "ERROR: grub-install missing"
+fi
+if [ "$BIOS_OK" = 0 ] && [ "$EFI_OK" = 0 ]; then
+  echo "ERROR: grub-install failed for both BIOS and EFI"
+  exit 1
+fi
+
+# OpenRC runlevels: full sysinit + boot + default + shutdown
+for s in devfs procfs sysfs dmesg hwdrivers udev udev-trigger udev-settle; do
+  [ -x "/etc/init.d/$s" ] && rc-update add "$s" sysinit 2>/dev/null || true
+done
+rc-update del mdev sysinit 2>/dev/null || true
+
+for s in modules sysctl hostname bootmisc syslog fsck root localmount swap loopback networking seedrng swclock; do
+  [ -x "/etc/init.d/$s" ] && rc-update add "$s" boot 2>/dev/null || true
+done
+
+for s in dbus acpid mariiy-go2rtc mariiy-agent mariiy-ui local; do
+  [ -x "/etc/init.d/$s" ] && rc-update add "$s" default 2>/dev/null || true
+done
+rc-update del chronyd default 2>/dev/null || true
+
+for s in mount-ro killprocs savecache; do
+  [ -x "/etc/init.d/$s" ] && rc-update add "$s" shutdown 2>/dev/null || true
+done
+
+# Ensure D-Bus machine-id exists
+dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null || true
+
+# Create Python venv sharing system site-packages + vendored onvif
+python3 -m venv --system-site-packages /usr/share/mariiy_nvr_os/venv 2>/dev/null || true
+
+# Kernel modules to load at boot
+mkdir -p /etc
+for m in ext4 vfat nls_cp437 nls_iso8859-1 e1000 e1000e vmxnet3 i915 drm vmwgfx; do
+  grep -qx "$m" /etc/modules 2>/dev/null || echo "$m" >>/etc/modules
+done
+
+# Remove broken non-KMS vmware_drv.so so Xorg uses modesetting KMS driver cleanly
+rm -f /usr/lib/xorg/modules/drivers/vmware_drv.so 2>/dev/null || true
+
+cat >/etc/network/interfaces <<'NIEOF'
+auto lo
+iface lo inet loopback
+NIEOF
+
+mkdir -p /etc/local.d
+cat >/etc/local.d/dhcp.start <<'DHEOF'
+#!/bin/sh
+ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
+(
+  for n in /sys/class/net/*; do
+    i=$(basename "$n")
+    [ "$i" = lo ] && continue
+    [ -d "/sys/class/net/$i" ] || continue
+    ip link set "$i" up 2>/dev/null || ifconfig "$i" up 2>/dev/null || true
+    udhcpc -b -i "$i" -T 2 -t 3 >/dev/null 2>&1 || true
+  done
+) </dev/null >/dev/null 2>&1 &
+exit 0
+DHEOF
+chmod 755 /etc/local.d/dhcp.start
+
+printf '127.0.0.1\tlocalhost mariiy-nvr\n::1\tlocalhost\n' >/etc/hosts
+echo 'mariiy-nvr' >/etc/hostname
+
+# Root & nvr accounts
+passwd -d root 2>/dev/null || true
+adduser -D -h /home/nvr -s /bin/sh nvr 2>/dev/null || true
+for grp in video audio input render tty wheel; do
+  adduser nvr "$grp" 2>/dev/null || true
+  adduser root "$grp" 2>/dev/null || true
+done
+passwd -d nvr 2>/dev/null || true
+
+# Firefox Enterprise Policy: disable first-run welcome tabs, telemetry, captive portal
+mkdir -p /usr/lib/firefox/distribution /etc/firefox/policies
+cat >/usr/lib/firefox/distribution/policies.json <<'FFPOL'
+{
+  "policies": {
+    "DisableAppUpdate": true,
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "DisablePocket": true,
+    "DisableFirefoxAccounts": true,
+    "DontCheckDefaultBrowser": true,
+    "NoDefaultBookmarks": true,
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": "",
+    "CaptivePortal": false,
+    "Homepage": {
+      "URL": "http://127.0.0.1:8765/",
+      "StartPage": "homepage"
+    },
+    "UserMessaging": {
+      "WhatsNew": false,
+      "ExtensionRecommendations": false,
+      "FeatureRecommendations": false,
+      "UrlbarInterventions": false,
+      "SkipOnboarding": true,
+      "MoreFromMozilla": false
+    }
+  }
+}
+FFPOL
+cp -f /usr/lib/firefox/distribution/policies.json /etc/firefox/policies/policies.json 2>/dev/null || true
+
+# Pre-seed Firefox kiosk profile for root and nvr
+for home_dir in /root /home/nvr; do
+  prof_dir="${home_dir}/.mozilla/firefox/kiosk"
+  mkdir -p "$prof_dir"
+  cat >"${prof_dir}/user.js" <<'FFUSER'
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("browser.startup.page", 1);
+user_pref("browser.startup.homepage", "http://127.0.0.1:8765/");
+user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+user_pref("datareporting.healthreport.uploadEnabled", false);
+user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
+user_pref("trailhead.firstrun.didSeeAboutWelcome", true);
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("browser.tabs.warnOnClose", false);
+user_pref("browser.sessionstore.resume_from_crash", false);
+user_pref("network.captive-portal-service.enabled", false);
+user_pref("network.connectivity-service.enabled", false);
+user_pref("media.autoplay.default", 0);
+user_pref("media.autoplay.blocking_policy", 0);
+FFUSER
+done
+chown -R nvr:nvr /home/nvr 2>/dev/null || true
+
+mkdir -p /etc/X11 /etc/xdg/openbox
+cat >/etc/xdg/openbox/rc.xml <<'OBEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc" xmlns:xi="http://www.w3.org/2001/XInclude">
+  <applications>
+    <application class="*">
+      <decor>no</decor>
+      <maximized>true</maximized>
+      <fullscreen>yes</fullscreen>
+    </application>
+  </applications>
+</openbox_config>
+OBEOF
+
+cat >/root/.xinitrc <<'XEOF'
+#!/bin/sh
+export DISPLAY="${DISPLAY:-:0}"
+export HOME=/root
+xset -dpms 2>/dev/null || true
+xset s off 2>/dev/null || true
+xset s noblank 2>/dev/null || true
+xsetroot -solid '#071018' 2>/dev/null || true
+xhost +local: 2>/dev/null || true
+if command -v xrandr >/dev/null 2>&1; then
+  xrandr --output Virtual-1 --mode 1920x1080 2>/dev/null \
+    || xrandr --output Virtual-1 --mode 1280x800 2>/dev/null \
+    || xrandr -s 1920x1080 2>/dev/null \
+    || xrandr -s 1280x800 2>/dev/null \
+    || true
+fi
+openbox &
+sleep 1
+exec /usr/sbin/mariiy-nvr-kiosk
+XEOF
+chmod 755 /root/.xinitrc
+cp -f /root/.xinitrc /home/nvr/.xinitrc
+chown -R nvr:nvr /home/nvr 2>/dev/null || true
+
+cat >/etc/inittab <<'IEOF'
+::sysinit:/sbin/openrc sysinit
+::sysinit:/sbin/openrc boot
+::wait:/sbin/openrc default
+tty1::respawn:/usr/sbin/mariiy-session
+tty2::respawn:/sbin/getty 38400 tty2
+tty3::respawn:/sbin/getty 38400 tty3
+::ctrlaltdel:/sbin/reboot
+::shutdown:/sbin/openrc shutdown
+IEOF
+
+rm -f /etc/local.d/mariiy.start /usr/sbin/mariiy-installer /usr/sbin/mariiy-tty1 2>/dev/null || true
+CHROOT_EOF
+
+chmod 755 /mnt/target/tmp/setup-chroot.sh
+chroot /mnt/target /tmp/setup-chroot.sh "$DISK" "$ROOT_UUID"
+rm -f /mnt/target/tmp/setup-chroot.sh
+
+# Clean up any stale MARIIY_ROOT partitions on OTHER disks so BIOS/UEFI never boots an old beta
+if command -v blkid >/dev/null 2>&1; then
+  for other_part in $(blkid -t LABEL="MARIIY_ROOT" -o device 2>/dev/null || true); do
+    [ "$other_part" = "$P3" ] && continue
+    [ -b "$other_part" ] || continue
+    echo "  neutralizing stale MARIIY_ROOT on $other_part (converting to recording disk MARIIY_REC)..."
+    e2label "$other_part" MARIIY_REC 2>/dev/null || tune2fs -L MARIIY_REC "$other_part" 2>/dev/null || true
+    mkdir -p /mnt/stale
+    if mount -t ext4 -o rw "$other_part" /mnt/stale 2>/dev/null; then
+      rm -f /mnt/stale/etc/mariiy_nvr_os/installed 2>/dev/null || true
+      if [ -d /mnt/stale/boot/grub ]; then
+        cp -f /mnt/target/boot/grub/grub.cfg /mnt/stale/boot/grub/grub.cfg 2>/dev/null || true
+      fi
+      umount /mnt/stale 2>/dev/null || true
+    fi
+  done
+fi
+
+sync
+umount /mnt/target/boot/efi 2>/dev/null || true
+umount /mnt/target/sys /mnt/target/proc /mnt/target/dev 2>/dev/null || true
+umount /mnt/efi /mnt/target 2>/dev/null || true
+sync
+
+echo
+echo "[6/6] DONE (${VERSION})"

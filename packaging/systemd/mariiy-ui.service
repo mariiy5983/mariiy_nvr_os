@@ -1,0 +1,14 @@
+[Unit]
+Description=Mariiy NVR Web UI
+After=mariiy-agent.service
+Requires=mariiy-agent.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/share/mariiy_nvr_os/web
+ExecStart=/usr/bin/python3 -m http.server 8765 --bind 0.0.0.0
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

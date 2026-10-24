@@ -25,6 +25,7 @@
       background: #0e5fae;
       color: #fff;
       font: inherit;
+      cursor: pointer;
     }
     label { display: block; margin-bottom: 8px; color: #b7cde0; font-size: 14px; }
     input {
@@ -63,6 +64,7 @@
       <p class="hint">可以關閉這個頁面，回到主機看遠端狀態。</p>
     </div>
   </main>
+  <script src="api.js"></script>
   <script>
     const KEY = "nvr-setup";
     function cleanHost(value) {
@@ -88,7 +90,7 @@
       document.getElementById("form").hidden = false;
       document.getElementById("host").focus();
     });
-    document.getElementById("form").addEventListener("submit", (event) => {
+    document.getElementById("form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const host = cleanHost(document.getElementById("host").value);
       const error = document.getElementById("error");
@@ -98,13 +100,17 @@
       }
       error.textContent = "";
       const data = readStore();
-      data.remote = Object.assign(
+      const remoteObj = Object.assign(
         { enabled: true, host: "", linked: false, viewers: 2 },
         data.remote,
         { host: host, linked: true }
       );
-      delete data.remote.token;
+      delete remoteObj.token;
+      data.remote = remoteObj;
       localStorage.setItem(KEY, JSON.stringify(data));
+      if (typeof MariiyAPI !== "undefined" && MariiyAPI.setRemote) {
+        try { await MariiyAPI.setRemote(remoteObj); } catch (_) {}
+      }
       showDone(host);
     });
   </script>

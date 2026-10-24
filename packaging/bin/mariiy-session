@@ -1,0 +1,114 @@
+#!/bin/sh
+export HOME=/root
+export USER=root
+export LOGNAME=root
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export XAUTHORITY=/root/.Xauthority
+
+if [ ! -f /etc/mariiy_nvr_os/installed ]; then
+  exec /sbin/getty 38400 tty1
+fi
+
+echo "Starting Mariiy NVR..."
+mount -o remount,rw / >/dev/null 2>&1 || true
+mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /tmp >/dev/null 2>&1 || true
+mkdir -p /dev/shm /tmp/.X11-unix /tmp/.ICE-unix /var/log /etc/X11 /run
+mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /dev/shm >/dev/null 2>&1 || true
+chmod 1777 /tmp /dev/shm /tmp/.X11-unix /tmp/.ICE-unix 2>/dev/null || true
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+touch /root/.Xauthority
+chmod 600 /root/.Xauthority
+chown root:root /root /root/.Xauthority 2>/dev/null || true
+echo "MARIY_SESSION_STARTED $(date)" >>/var/log/mariiy-session.log 2>/dev/null || true
+
+# Ensure loopback is up immediately so local services can bind 127.0.0.1
+ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
+ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+
+is_vmware() {
+  for f in /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name /sys/class/dmi/id/board_vendor; do
+    [ -r "$f" ] && grep -qi vmware "$f" && return 0
+  done
+  return 1
+}
+
+# Remove broken non-KMS vmware Xorg driver if present
+rm -f /usr/lib/xorg/modules/drivers/vmware_drv.so 2>/dev/null || true
+
+if is_vmware; then
+  for m in e1000 e1000e vmxnet3 drm vmwgfx; do
+    modprobe "$m" 2>/dev/null || true
+  done
+  DRIVERS="modesetting fbdev vesa"
+  ACCEL_OPT='Option "AccelMethod" "none"'
+  echo "  platform: VMware (KMS modesetting)"
+else
+  for m in e1000e r8169 igc drm i915 xe; do
+    modprobe "$m" 2>/dev/null || true
+  done
+  DRIVERS="modesetting fbdev vesa"
+  ACCEL_OPT=""
+  echo "  platform: bare metal (KMS modesetting / VAAPI)"
+fi
+
+# Ensure eudev daemon is running and input/DRM devices are tagged for Xorg libinput
+if ! pidof udevd >/dev/null 2>&1; then
+  /sbin/udevd --daemon 2>/dev/null || true
+fi
+udevadm trigger --type=subsystems --action=add 2>/dev/null || true
+udevadm trigger --type=devices --action=add 2>/dev/null || true
+udevadm settle --timeout=5 2>/dev/null || true
+
+echo "  dri: $(ls /dev/dri 2>/dev/null | tr '\n' ' ')"
+echo "  input: $(ls /dev/input 2>/dev/null | tr '\n' ' ')"
+echo "  net: $(ls -1 /sys/class/net 2>/dev/null | tr '\n' ' ')"
+
+dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null || true
+rc-service dbus start 2>/dev/null || true
+rc-service mariiy-go2rtc start 2>/dev/null || true
+rc-service mariiy-agent start 2>/dev/null || true
+rc-service mariiy-ui start 2>/dev/null || true
+
+try_x() {
+  drv="$1"
+  echo "Trying X driver: $drv"
+  cat >/etc/X11/xorg.conf <<EOF
+Section "ServerFlags"
+	Option "DontVTSwitch" "false"
+	Option "DontZap" "false"
+	Option "BlankTime" "0"
+	Option "StandbyTime" "0"
+	Option "SuspendTime" "0"
+	Option "OffTime" "0"
+	Option "AutoAddDevices" "true"
+	Option "AutoEnableDevices" "true"
+EndSection
+Section "Device"
+	Identifier "Card0"
+	Driver "$drv"
+	Option "SWCursor" "true"
+	${ACCEL_OPT}
+EndSection
+Section "Screen"
+	Identifier "Screen0"
+	Device "Card0"
+	DefaultDepth 24
+	SubSection "Display"
+		Depth 24
+		Modes "1920x1080" "1280x800" "1280x720" "1024x768"
+	EndSubSection
+EndSection
+EOF
+  rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+  xinit /root/.xinitrc -- /usr/bin/Xorg :0 vt1 -keeptty -noreset -nolisten tcp
+}
+
+for drv in $DRIVERS; do
+  try_x "$drv" && break
+  echo "X driver $drv exited, trying next..."
+  sleep 1
+done
+
+echo
+echo "X session ended. Login: root (empty password)."
+exec /sbin/getty 38400 tty1

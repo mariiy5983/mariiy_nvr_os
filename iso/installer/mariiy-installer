@@ -1,0 +1,264 @@
+#!/bin/sh
+# Mariiy NVR installer UI (ASCII only — Alpine console has no CJK font)
+VERSION="${MARIIY_VERSION:-1.0.0}"
+
+cls() { printf '\033c' 2>/dev/null || true; }
+
+pause() {
+  echo
+  printf "Press Enter to continue... "
+  read -r _junk </dev/tty 2>/dev/null || read -r _junk || true
+}
+
+mount_media() {
+  mkdir -p /media/cdrom
+  for dev in /dev/sr0 /dev/cdrom /dev/sr1; do
+    [ -b "$dev" ] || continue
+    mount -o ro "$dev" /media/cdrom 2>/dev/null || true
+    if [ -d /media/cdrom/mariiy ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_media() {
+  mount_media || true
+  for p in /media/cdrom/mariiy /mariiy /media/*/mariiy; do
+    if [ -d "$p/web" ] && [ -d "$p/bin" ]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+disk_bytes() {
+  name="$1"
+  if [ -r "/sys/block/$name/size" ]; then
+    sectors=$(cat "/sys/block/$name/size")
+    echo $((sectors * 512))
+  else
+    echo 0
+  fi
+}
+
+human_size() {
+  b="$1"
+  if [ "$b" -ge 1073741824 ]; then
+    echo "$((b / 1073741824))G"
+  elif [ "$b" -ge 1048576 ]; then
+    echo "$((b / 1048576))M"
+  else
+    echo "${b}B"
+  fi
+}
+
+MEDIA="$(find_media || true)"
+
+DISK_SCRIPT=""
+for p in \
+  /usr/sbin/mariiy-install-disk \
+  "$MEDIA/bin/mariiy-install-disk" \
+  /mariiy/bin/mariiy-install-disk \
+  /media/cdrom/mariiy/bin/mariiy-install-disk
+do
+  [ -n "$p" ] || continue
+  if [ -f "$p" ] && [ -x "$p" ]; then
+    DISK_SCRIPT="$p"
+    break
+  fi
+done
+
+media_base=""
+for n in /sys/block/sr*; do
+  [ -e "$n" ] || continue
+  media_base="${media_base:+$media_base }$(basename "$n")"
+done
+
+CANDS=""
+BEST=""
+BEST_B=0
+for path in /sys/block/nvme* /sys/block/sd* /sys/block/vd* /sys/block/xvd* /sys/block/hd*; do
+  [ -e "$path" ] || continue
+  name=$(basename "$path")
+  skip=0
+  for m in $media_base; do
+    [ "$name" = "$m" ] && skip=1
+  done
+  [ "$skip" = 1 ] && continue
+  bytes=$(disk_bytes "$name")
+  # Require at least 1 GB for system disk
+  [ "$bytes" -ge 1073741824 ] || continue
+  CANDS="${CANDS:+$CANDS }$name"
+  # Prefer the first/smallest eligible disk as system disk (leaving larger disks for recording)
+  if [ -z "$BEST" ] || [ "$bytes" -lt "$BEST_B" ]; then
+    BEST_B=$bytes
+    BEST=$name
+  fi
+done
+
+cls
+cat <<EOF
+========================================
+  Mariiy NVR Installer
+  Version: ${VERSION}
+========================================
+This media installs Mariiy NVR to disk.
+After install finishes, it will eject media and reboot into Mariiy NVR.
+
+Install media: ${MEDIA:-NOT FOUND}
+Detected disks:
+EOF
+
+i=1
+for name in $CANDS; do
+  bytes=$(disk_bytes "$name")
+  hs=$(human_size "$bytes")
+  model=$(cat "/sys/block/$name/device/model" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//' || echo "")
+  mark=""
+  [ "$name" = "$BEST" ] && mark="  <- default (system disk)"
+  printf "  %s) /dev/%s  %s  %s%s\n" "$i" "$name" "$hs" "$model" "$mark"
+  i=$((i + 1))
+done
+
+if [ -z "$MEDIA" ]; then
+  echo
+  echo "ERROR: install media /mariiy not mounted."
+  echo "In VMware: CD/DVD -> this ISO -> Connect at power on."
+  echo "Then:  mount -o ro /dev/sr0 /media/cdrom"
+  pause
+  exit 1
+fi
+
+if [ -z "$DISK_SCRIPT" ]; then
+  echo
+  echo "ERROR: mariiy-install-disk not found."
+  pause
+  exit 1
+fi
+
+if [ -z "$BEST" ]; then
+  echo
+  echo "ERROR: no hard disk (>= 1G) found."
+  echo "VMware: add a virtual disk, then reboot."
+  pause
+  exit 1
+fi
+
+echo
+echo "Default target disk:  /dev/${BEST}  ($(human_size "$BEST_B"))"
+echo
+
+AUTOINSTALL=0
+if grep -q "mariiy_autoinstall=1" /proc/cmdline 2>/dev/null || [ "${MARIIY_AUTOINSTALL:-0}" = "1" ]; then
+  AUTOINSTALL=1
+fi
+
+if [ "$AUTOINSTALL" = "1" ]; then
+  echo "Auto-install enabled: installing to /dev/${BEST} ..."
+  OK="y"
+else
+  printf "Press Enter to install to /dev/%s [auto-install in 10s, 1-9=disk, n=cancel]: " "$BEST"
+  OK=""
+  if [ -r /dev/tty ]; then
+    read -t 10 -r OK </dev/tty || OK=""
+  else
+    read -t 10 -r OK || OK=""
+  fi
+  echo
+fi
+
+case "$OK" in
+  ""|y|Y|yes|YES)
+    ;;
+  n|N|no|NO|q|Q)
+    echo "Cancelled."
+    pause
+    exit 0
+    ;;
+  [1-9])
+    idx=1
+    picked=""
+    for name in $CANDS; do
+      if [ "$idx" = "$OK" ]; then
+        picked="$name"
+        break
+      fi
+      idx=$((idx + 1))
+    done
+    if [ -z "$picked" ]; then
+      echo "Invalid disk number: $OK"
+      pause
+      exit 1
+    fi
+    BEST="$picked"
+    BEST_B=$(disk_bytes "$BEST")
+    ;;
+  /dev/*)
+    dev_short="${OK#/dev/}"
+    if [ -b "/dev/$dev_short" ]; then
+      BEST="$dev_short"
+      BEST_B=$(disk_bytes "$BEST")
+    else
+      echo "Invalid block device: $OK"
+      pause
+      exit 1
+    fi
+    ;;
+  *)
+    if [ -b "/dev/$OK" ]; then
+      BEST="$OK"
+      BEST_B=$(disk_bytes "$BEST")
+    else
+      echo "Cancelled."
+      pause
+      exit 0
+    fi
+    ;;
+esac
+
+echo
+echo "Installing Mariiy NVR ${VERSION} to /dev/${BEST} ($(human_size "$BEST_B"))..."
+export MARIIY_MEDIA="$MEDIA"
+export MARIIY_VERSION="$VERSION"
+if ! sh "$DISK_SCRIPT" "/dev/${BEST}"; then
+  echo
+  echo "INSTALL FAILED (see messages above)."
+  pause
+  exit 1
+fi
+
+sync
+umount /media/cdrom 2>/dev/null || true
+eject /dev/sr0 2>/dev/null || eject /dev/cdrom 2>/dev/null || true
+
+echo
+echo "========================================"
+echo "  Install Complete! (${VERSION})"
+echo "========================================"
+if [ "$AUTOINSTALL" = "1" ]; then
+  echo "Rebooting into Mariiy NVR in 2 seconds..."
+  sleep 2
+  reboot -f 2>/dev/null || reboot
+  exit 0
+fi
+
+printf "Press Enter to reboot into Mariiy NVR now [auto-reboot in 5s, s=shell]: "
+ANS=""
+if [ -r /dev/tty ]; then
+  read -t 5 -r ANS </dev/tty || ANS=""
+else
+  read -t 5 -r ANS || ANS=""
+fi
+echo
+case "$ANS" in
+  s|S|sh|shell)
+    echo "Dropping to shell. Type 'reboot' when ready."
+    exit 0
+    ;;
+  *)
+    echo "Rebooting..."
+    reboot 2>/dev/null || reboot -f
+    ;;
+esac

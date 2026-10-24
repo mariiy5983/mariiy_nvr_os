@@ -63,7 +63,7 @@ const ZONES = [
 ];
 const STORE_KEY = "nvr-setup";
 const GOOGLE_NTP = "time.google.com";
-const VERSION = "1.0.0-beta.2";
+const VERSION = "1.0.0";
 const OS_NAME = "mariiy_nvr_os";
 const GITHUB = "https://github.com/mariiy5983/mariiy_nvr_os";
 const LICENSE = "GPLv3";
@@ -243,6 +243,11 @@ const state = {
   firmwareStatus: `目前 ${VERSION}`,
   logFilter: "all",
   locked: false,
+  agentOnline: false,
+  apiById: {},
+  onvifUser: "admin",
+  onvifPass: "",
+  onvifXaddr: "",
   wizard: { step: 0, password: "", confirm: "", error: "" },
 };
 
@@ -347,6 +352,9 @@ function validIPv4(value) {
 }
 
 function channelAddress(ch) {
+  const api = state.apiById[ch.id];
+  if (api && api.host) return api.host;
+  if (api && api.xaddr) return api.xaddr;
   return `192.168.1.${20 + ch.index}:80`;
 }
 
@@ -593,6 +601,21 @@ function fitWall() {
 }
 
 function buildScene(ch) {
+  const apiCh = state.apiById[ch.id];
+  const hasReal = state.agentOnline && apiCh && !apiCh.empty && (apiCh.subUri || apiCh.mainUri || apiCh.stream);
+  if (hasReal && typeof MariiyAPI !== "undefined") {
+    const wrap = document.createElement("div");
+    wrap.className = "scene live-stream";
+    const frame = document.createElement("iframe");
+    frame.className = "stream-frame";
+    frame.allow = "autoplay; fullscreen";
+    frame.loading = "lazy";
+    const main = Boolean(state.zoomed && state.forceMain);
+    frame.src = MariiyAPI.playerUrl(ch.id, main);
+    frame.title = chLabel(ch);
+    wrap.appendChild(frame);
+    return wrap;
+  }
   const scene = document.createElement("div");
   scene.className = "scene";
   const hue = ch.ir ? 95 : 205 + (ch.id * 11) % 40;
@@ -605,10 +628,72 @@ function buildScene(ch) {
   if (state.zoomed) {
     const tag = document.createElement("div");
     tag.className = "sim-tag";
-    tag.textContent = "模擬畫面";
+    tag.textContent = state.agentOnline ? "等待串流" : "模擬畫面";
     scene.appendChild(tag);
   }
   return scene;
+}
+
+async function syncAgent() {
+  if (typeof MariiyAPI === "undefined") return;
+  const health = await MariiyAPI.health();
+  state.agentOnline = Boolean(health && health.ok);
+  if (!state.agentOnline) {
+    state.apiById = {};
+    return;
+  }
+  try {
+    const data = await MariiyAPI.channels();
+    const map = {};
+    (data.channels || []).forEach((item) => {
+      map[item.id] = item;
+      const local = channels[item.id - 1];
+      if (!local || item.empty) return;
+      if (item.name) local.name = item.name;
+      local.online = Boolean(item.online);
+      if (typeof item.preview === "boolean") local.preview = item.preview;
+      if (typeof item.recording === "boolean") local.recording = item.recording;
+    });
+    state.apiById = map;
+  } catch (_) {
+    state.agentOnline = false;
+    return;
+  }
+  try {
+    const sys = await MariiyAPI.system();
+    if (sys) {
+      if (sys.cpu) HARDWARE.cpu = sys.cpu;
+      if (sys.memoryMB) HARDWARE.memory = `${Math.max(1, Math.round(sys.memoryMB / 1024))} GB`;
+      if (sys.network) {
+        if (sys.network.ip && sys.network.ip !== "127.0.0.1") state.network.ip = sys.network.ip;
+        if (sys.network.mac) state.network.mac = sys.network.mac;
+        if (sys.network.gateway) state.network.gateway = sys.network.gateway;
+      }
+      if (Array.isArray(sys.disks) && sys.disks.length) {
+        DISKS.length = 0;
+        sys.disks.forEach((d) => {
+          DISKS.push({
+            slot: d.slot || (d.role === "system" ? "系統" : "1"),
+            dev: d.dev || d.mount || "sda",
+            role: d.role || "system",
+            size: d.size || `${d.totalGB || 0} GB`,
+            used: d.used || `${d.usedGB || 0} GB`,
+            status: d.status || "正常",
+          });
+        });
+      }
+    }
+  } catch (_) {}
+  try {
+    if (MariiyAPI.getRemote) {
+      const rem = await MariiyAPI.getRemote();
+      if (rem && rem.remote && rem.remote.linked && rem.remote.host) {
+        state.remote.host = cleanHost(rem.remote.host);
+        state.remote.linked = true;
+        saveStore();
+      }
+    }
+  } catch (_) {}
 }
 
 function statusText() {
@@ -670,7 +755,7 @@ function renderChrome() {
   badge.textContent = String(alarms);
   badge.classList.toggle("empty", alarms === 0);
   document.getElementById("alarmBtn").classList.toggle("live", alarms > 0);
-  document.getElementById("remoteDot").classList.remove("ok");
+  document.getElementById("remoteDot").classList.toggle("ok", Boolean(state.remote.enabled && state.remote.linked && state.remote.host));
   document.getElementById("remotePill").title = remoteStatus();
   const recordDisks = DISKS.filter((disk) => disk.role === "record" && disk.status === "正常");
   document.getElementById("diskDot").classList.toggle("ok", recordDisks.length > 0);
@@ -877,6 +962,9 @@ function ptzAction(action) {
     toast("此通道目前沒有畫面");
     return;
   }
+  if (typeof MariiyAPI !== "undefined" && state.agentOnline && state.apiById[ch.id] && !state.apiById[ch.id].empty) {
+    MariiyAPI.ptz(ch.id, action).catch(() => {});
+  }
   toast(`${chLabel(ch)} 雲台：${action}`);
 }
 
@@ -974,6 +1062,15 @@ function paintScene(el, source) {
   el.style.setProperty("--sky", `hsl(${hue} 22% ${source.ir ? 14 : 18}%)`);
   el.style.setProperty("--ground", `hsl(${hue} 14% 8%)`);
   el.classList.toggle("ir", Boolean(source.ir));
+  if (source.url) {
+    el.style.backgroundImage = `url("${source.url}")`;
+    el.style.backgroundSize = "cover";
+    el.style.backgroundPosition = "center";
+  } else {
+    el.style.removeProperty("background-image");
+    el.style.removeProperty("background-size");
+    el.style.removeProperty("background-position");
+  }
 }
 
 function paintPlayhead() {
@@ -1003,15 +1100,28 @@ function seekFromEvent(event) {
 }
 
 function addShot(ch) {
-  state.shots.unshift({
+  const shotObj = {
     id: `${Date.now()}-${ch.id}`,
     index: ch.index,
     channelId: ch.id,
     name: chLabel(ch),
     time: nowText(),
     ir: ch.ir,
-  });
+    url: "",
+  };
+  state.shots.unshift(shotObj);
   if (state.shots.length > 36) state.shots.length = 36;
+  if (typeof MariiyAPI !== "undefined" && state.agentOnline && state.apiById[ch.id] && !state.apiById[ch.id].empty) {
+    MariiyAPI.snapshot(ch.id)
+      .then((res) => {
+        if (res && res.url) {
+          shotObj.url = MariiyAPI.agent + res.url;
+          if (state.screen === "pictures") renderPage();
+          renderViewer();
+        }
+      })
+      .catch(() => {});
+  }
   toast(`${chLabel(ch)} 已存入圖片`);
   if (state.screen === "pictures") renderPage();
 }
@@ -1570,8 +1680,28 @@ function renderLanSettings() {
 
 function renderChannelSettings() {
   const wrap = document.createElement("div");
+  const note = state.agentOnline
+    ? "Agent 已連線。可搜尋 ONVIF 並加入真實攝影機（子碼流預覽、主碼流單畫面）。"
+    : "Agent 未連線時顯示模擬通道。安裝版開機後會自動啟動 ONVIF Agent 與 go2rtc。";
+  const actions = document.createElement("div");
+  actions.className = "form-actions";
+  actions.append(
+    actionButton("搜尋 ONVIF", "onvif-discover", "ghost"),
+    actionButton("重新整理", "onvif-refresh", "ghost"),
+  );
+  const user = textInput("onvifUser", state.onvifUser || "admin", true);
+  const pass = textInput("onvifPass", state.onvifPass || "", true);
+  pass.type = "password";
+  const xaddr = textInput("onvifXaddr", state.onvifXaddr || "", true);
+  xaddr.placeholder = "http://192.168.1.64/onvif/device_service";
+  actions.append(actionButton("手動加入", "onvif-add", "ghost"));
   wrap.append(
-    paneNote("通道以 ONVIF 管理。名稱和預覽開關會立刻反映在預覽畫面。"),
+    paneNote(note),
+    settingRow("Agent", readOnlyInput(state.agentOnline ? "已連線" : "未連線")),
+    settingRow("帳號", user),
+    settingRow("密碼", pass),
+    settingRow("手動位址", xaddr),
+    actions,
     channelTable([
       ["名稱", "name"],
       ["協定", "proto"],
@@ -1895,7 +2025,11 @@ function remoteStatus() {
 }
 
 function remoteSetupUrl() {
-  return new URL("remote.html", location.href).href;
+  const u = new URL("remote.html", location.href);
+  if ((u.hostname === "127.0.0.1" || u.hostname === "localhost") && state.network.ip && !state.network.ip.startsWith("127.")) {
+    u.hostname = state.network.ip;
+  }
+  return u.href;
 }
 
 function pullRemote() {
@@ -2468,6 +2602,11 @@ function runSettingsAction(action) {
     return;
   }
   if (action === "reboot") {
+    if (typeof MariiyAPI !== "undefined" && state.agentOnline && MariiyAPI.reboot) {
+      toast("正在重新啟動主機…");
+      MariiyAPI.reboot().catch(() => {});
+      return;
+    }
     toast("預覽模式不會重新啟動這台電腦");
     return;
   }
@@ -2499,6 +2638,76 @@ function runSettingsAction(action) {
     renderChrome();
     return;
   }
+  if (action === "onvif-refresh") {
+    syncAgent().then(() => {
+      toast(state.agentOnline ? "通道已更新" : "Agent 未連線");
+      refreshSettings();
+      if (state.screen === "live") renderWall();
+    });
+    return;
+  }
+  if (action === "onvif-add") {
+    const xaddr = (state.onvifXaddr || "").trim();
+    if (!xaddr) {
+      toast("請先填寫手動位址");
+      return;
+    }
+    if (typeof MariiyAPI === "undefined" || !state.agentOnline) {
+      toast("需要 Agent 連線");
+      return;
+    }
+    toast("正在加入攝影機…");
+    MariiyAPI.addCamera({
+      xaddr,
+      username: state.onvifUser || "admin",
+      password: state.onvifPass || "",
+    })
+      .then(() => syncAgent())
+      .then(() => {
+        toast("已加入攝影機");
+        refreshSettings();
+        if (state.screen === "live") renderWall();
+      })
+      .catch((err) => toast(String(err.message || err)));
+    return;
+  }
+  if (action === "onvif-discover") {
+    if (typeof MariiyAPI === "undefined" || !state.agentOnline) {
+      toast("需要 Agent 連線");
+      return;
+    }
+    toast("正在搜尋 ONVIF…");
+    MariiyAPI.discover(4)
+      .then(async (data) => {
+        const devices = data.devices || [];
+        if (!devices.length) {
+          toast("沒有找到攝影機");
+          return;
+        }
+        const user = state.onvifUser || "admin";
+        const pass = state.onvifPass || "";
+        let added = 0;
+        for (const device of devices.slice(0, 32)) {
+          try {
+            await MariiyAPI.addCamera({
+              xaddr: device.xaddr,
+              username: user,
+              password: pass,
+              name: device.name || device.host || "",
+            });
+            added += 1;
+          } catch (_) {
+            /* try next */
+          }
+        }
+        await syncAgent();
+        toast(`已加入 ${added} 台`);
+        refreshSettings();
+        if (state.screen === "live") renderWall();
+      })
+      .catch((err) => toast(String(err.message || err)));
+    return;
+  }
   if (action === "mail-test") {
     if (!state.mail.enabled || !state.mail.server || !state.mail.to) {
       toast("請先填郵件伺服器和收件者");
@@ -2512,6 +2721,9 @@ function runSettingsAction(action) {
     state.remote.linked = false;
     delete state.remote.token;
     saveStore();
+    if (typeof MariiyAPI !== "undefined" && state.agentOnline && MariiyAPI.setRemote) {
+      MariiyAPI.setRemote({ enabled: state.remote.enabled, host: "", linked: false, viewers: state.remote.viewers }).catch(() => {});
+    }
     toast("請用手機重新掃描");
     refreshSettings();
     return;
@@ -2550,14 +2762,32 @@ function onPageChange(event) {
   if (!field) return;
   if (field === "name" || field === "preview" || field === "record" || field === "alarm") {
     const ch = channels[Number(target.dataset.index)];
+    const patch = {};
     if (field === "name") {
       ch.name = target.value.trim().slice(0, 16) || ch.name;
       target.value = ch.name;
-    } else if (field === "preview") ch.preview = target.checked;
-    else if (field === "record") ch.recording = target.checked;
-    else ch.alarm = target.checked;
+      patch.name = ch.name;
+    } else if (field === "preview") {
+      ch.preview = target.checked;
+      patch.preview = ch.preview;
+    } else if (field === "record") {
+      ch.recording = target.checked;
+      patch.recording = ch.recording;
+    } else {
+      ch.alarm = target.checked;
+    }
     saveStore();
     if (field === "alarm") renderChrome();
+    if (
+      Object.keys(patch).length &&
+      typeof MariiyAPI !== "undefined" &&
+      state.agentOnline &&
+      state.apiById[ch.id] &&
+      !state.apiById[ch.id].empty
+    ) {
+      MariiyAPI.patchChannel(ch.id, patch).catch(() => {});
+    }
+    if (field === "preview" && state.screen === "live") renderWall();
     return;
   }
   if (field === "tour") {
@@ -2649,6 +2879,9 @@ function onPageChange(event) {
   else if (field === "osdTime") state.osd.time = target.checked;
   else if (field === "remoteEnabled") state.remote.enabled = target.checked;
   else if (field === "remoteViewers") state.remote.viewers = Number(target.value);
+  else if (field === "onvifUser") state.onvifUser = target.value.trim().slice(0, 64) || "admin";
+  else if (field === "onvifPass") state.onvifPass = target.value;
+  else if (field === "onvifXaddr") state.onvifXaddr = target.value.trim();
   else return;
   refreshSettings();
 }
@@ -2719,6 +2952,11 @@ function bind() {
     }
     state.confirm = null;
     renderChrome();
+    if (typeof MariiyAPI !== "undefined" && state.agentOnline && MariiyAPI.poweroff) {
+      toast("正在關閉主機…");
+      MariiyAPI.poweroff().catch(() => {});
+      return;
+    }
     toast("預覽模式不會關閉這台電腦");
   });
   const wizard = document.getElementById("wizard");
@@ -2890,11 +3128,19 @@ resumeSession();
 buildSplits();
 buildPresets();
 bind();
-renderAll();
+syncAgent().finally(() => {
+  renderAll();
+});
 new ResizeObserver(() => fitWall()).observe(document.getElementById("wall"));
 tick();
 setInterval(tick, 1000);
 setInterval(checkIdle, 1000);
+setInterval(() => {
+  syncAgent().then(() => {
+    if (state.screen === "live") renderWall();
+    renderChrome();
+  });
+}, 15000);
 setInterval(() => {
   if (state.screen !== "playback" || !state.play.playing) return;
   if (!hasRecord(channels[state.play.index])) {

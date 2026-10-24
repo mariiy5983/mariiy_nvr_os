@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# Mariiy NVR Agent (ONVIF / API)
+
+name="mariiy-agent"
+description="Mariiy NVR Agent"
+command="/usr/sbin/mariiy-agent-start"
+command_background=true
+pidfile="/run/mariiy-agent.pid"
+
+depend() {
+  use net
+}
+
+start_pre() {
+  checkpath -d -m 0755 /var/lib/mariiy_nvr_os
+  checkpath -d -m 0755 /var/lib/mariiy_nvr_os/recordings
+  checkpath -d -m 0755 /var/lib/mariiy_nvr_os/snapshots
+  checkpath -d -m 0755 /etc/mariiy_nvr_os
+}

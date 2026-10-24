@@ -1,0 +1,14 @@
+[Unit]
+Description=Mariiy NVR go2rtc (RTSP / WebRTC / VAAPI)
+After=network-online.target mariiy-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/go2rtc -config /etc/mariiy_nvr_os/go2rtc.yaml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

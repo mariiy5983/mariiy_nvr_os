@@ -1,0 +1,17 @@
+[Unit]
+Description=Mariiy NVR Kiosk (installed system only)
+After=graphical.target mariiy-ui.service mariiy-agent.service mariiy-go2rtc.service
+Wants=graphical.target
+
+[Service]
+Type=simple
+User=root
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/0
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/sbin/mariiy-nvr-kiosk
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target

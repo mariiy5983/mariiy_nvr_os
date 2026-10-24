@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+# Mariiy NVR go2rtc (RTSP / WebRTC / VAAPI)
+
+name="mariiy-go2rtc"
+description="Mariiy go2rtc"
+command="/usr/bin/go2rtc"
+command_args="-config /etc/mariiy_nvr_os/go2rtc.yaml"
+command_background=true
+pidfile="/run/mariiy-go2rtc.pid"
+
+depend() {
+  use net
+}
+
+start_pre() {
+  checkpath -d -m 0755 /etc/mariiy_nvr_os
+  if [ ! -f /etc/mariiy_nvr_os/go2rtc.yaml ]; then
+    cp -f /usr/share/mariiy_nvr_os/packaging/go2rtc.yaml /etc/mariiy_nvr_os/go2rtc.yaml 2>/dev/null || \
+      printf 'api:\n  listen: ":1984"\nstreams: {}\n' >/etc/mariiy_nvr_os/go2rtc.yaml
+  fi
+  if [ ! -x "$command" ]; then
+    eerror "go2rtc binary missing"
+    return 1
+  fi
+}

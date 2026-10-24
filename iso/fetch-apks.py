@@ -17,33 +17,86 @@ MIRRORS = [
 ]
 
 ROOT_PKGS = [
+    "alpine-base",
+    "alpine-baselayout",
+    "alpine-conf",
+    "linux-lts",
+    "linux-firmware-none",
+    "linux-firmware-i915",
+    "mkinitfs",
+    "openrc",
+    "busybox",
+    "busybox-openrc",
+    "busybox-mdev-openrc",
+    "eudev",
+    "eudev-openrc",
+    "udev-init-scripts",
+    "udev-init-scripts-openrc",
+    "dbus",
+    "dbus-openrc",
+    "dbus-x11",
+    "acpid",
+    "acpid-openrc",
+    "chrony",
+    "chrony-openrc",
     "python3",
+    "py3-pip",
+    "py3-virtualenv",
+    "py3-lxml",
+    "py3-fastapi",
+    "uvicorn",
+    "py3-httpx",
+    "py3-pydantic",
+    "py3-starlette",
+    "py3-softlayer-zeep",
+    "py3-requests",
     "firefox",
     "font-dejavu",
     "font-noto-cjk",
     "mesa-dri-gallium",
     "mesa-egl",
     "mesa-gl",
+    "mesa-gbm",
+    "mesa-va-gallium",
+    "libva",
+    "libva-intel-driver",
+    "intel-media-driver",
+    "ffmpeg",
     "xorg-server",
-    "xf86-video-modesetting",
+    "xf86-video-fbdev",
+    "xf86-video-vesa",
     "xf86-input-libinput",
     "xf86-input-evdev",
     "openbox",
     "xinit",
     "xauth",
-    "dbus",
-    "dbus-x11",
-    "eudev",
+    "xhost",
+    "xset",
+    "xsetroot",
+    "xrandr",
+    "xterm",
     "setxkbmap",
+    "mcookie",
     "util-linux",
+    "blkid",
+    "lsblk",
+    "findmnt",
+    "partx",
+    "sfdisk",
     "e2fsprogs",
+    "e2fsprogs-extra",
     "dosfstools",
     "gptfdisk",
     "rsync",
     "bash",
     "curl",
     "ca-certificates",
-    "chrony",
+    "iproute2",
+    "pciutils",
+    "grub",
+    "grub-efi",
+    "grub-bios",
+    "efibootmgr",
 ]
 
 
@@ -86,7 +139,6 @@ def provide_map(pkgs: dict[str, dict]) -> dict[str, str]:
     for name, meta in pkgs.items():
         amap[name] = name
         for p in meta["provides"]:
-            # provide may be "cmd:foo=1" or "so:libx.so.1"
             key = p.split("=", 1)[0]
             amap.setdefault(key, name)
             amap.setdefault(p, name)
@@ -99,12 +151,21 @@ def resolve(wanted: list[str], pkgs: dict[str, dict], amap: dict[str, str]) -> l
     while stack:
         item = stack.pop()
         name = amap.get(item, item)
-        name = name.split("=", 1)[0].split(">", 1)[0].split("<", 1)[0]
+        name = name.split("=", 1)[0].split(">", 1)[0].split("<", 1)[0].split("~", 1)[0]
         if name.startswith("!") or name.startswith("/"):
             continue
+        # linux-lts pulls the full firmware tree (~1GB). Keep only the dummy
+        # provider plus Intel GPU firmware for VAAPI.
+        if name == "linux-firmware":
+            continue
+        if name.startswith("linux-firmware-") and name not in (
+            "linux-firmware-none",
+            "linux-firmware-i915",
+            "linux-firmware-xe",
+        ):
+            continue
         if name not in pkgs:
-            # try cmd:/so: stripped
-            alt = amap.get(item.split("=", 1)[0])
+            alt = amap.get(item.split("=", 1)[0].split("~", 1)[0])
             if not alt or alt not in pkgs:
                 print(f"warn: skip unresolved {item}", file=sys.stderr)
                 continue
@@ -112,8 +173,11 @@ def resolve(wanted: list[str], pkgs: dict[str, dict], amap: dict[str, str]) -> l
         if name in need:
             continue
         need.add(name)
+        openrc_sub = f"{name}-openrc"
+        if openrc_sub in pkgs and openrc_sub not in need:
+            stack.append(openrc_sub)
         for dep in pkgs[name]["deps"]:
-            dep_name = dep.split("=", 1)[0].split(">", 1)[0].split("<", 1)[0]
+            dep_name = dep.split("=", 1)[0].split(">", 1)[0].split("<", 1)[0].split("~", 1)[0]
             if dep_name.startswith("!"):
                 continue
             stack.append(dep_name)
@@ -134,8 +198,10 @@ def main() -> int:
     amap = provide_map(all_pkgs)
     names = resolve(ROOT_PKGS, all_pkgs, amap)
     print(f"packages: {len(names)}")
+    expected_files: set[str] = set()
     for name in names:
         meta = all_pkgs[name]
+        expected_files.add(meta["file"])
         dest = out / meta["file"]
         if dest.exists() and dest.stat().st_size > 32:
             print(f"have {meta['file']}")
@@ -144,7 +210,14 @@ def main() -> int:
         print(f"get  {meta['file']}")
         data = fetch(url)
         dest.write_bytes(data)
-    print(f"done -> {out}")
+
+    # Remove stale or duplicate APK versions from previous runs
+    for old in list(out.glob("*.apk")):
+        if old.name not in expected_files:
+            print(f"prune stale {old.name}")
+            old.unlink()
+
+    print(f"done -> {out} ({len(expected_files)} apks)")
     return 0
 
 

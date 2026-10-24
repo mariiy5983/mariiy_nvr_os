@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+# Mariiy NVR Web UI
+
+name="mariiy-ui"
+description="Mariiy NVR Web UI"
+command="/usr/bin/python3"
+command_args="-m http.server 8765 --bind 0.0.0.0"
+command_background=true
+pidfile="/run/mariiy-ui.pid"
+directory="/usr/share/mariiy_nvr_os/web"
+
+depend() {
+  use net
+}

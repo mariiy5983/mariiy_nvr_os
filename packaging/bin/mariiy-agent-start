@@ -1,0 +1,12 @@
+#!/bin/sh
+export MARIIY_DATA="${MARIIY_DATA:-/var/lib/mariiy_nvr_os}"
+export MARIIY_RECORD_DIR="${MARIIY_RECORD_DIR:-/var/lib/mariiy_nvr_os/recordings}"
+export MARIIY_SNAPSHOT_DIR="${MARIIY_SNAPSHOT_DIR:-/var/lib/mariiy_nvr_os/snapshots}"
+export MARIIY_GO2RTC_CONFIG="${MARIIY_GO2RTC_CONFIG:-/etc/mariiy_nvr_os/go2rtc.yaml}"
+export MARIIY_GO2RTC_URL="${MARIIY_GO2RTC_URL:-http://127.0.0.1:1984}"
+export PYTHONPATH="/usr/share/mariiy_nvr_os/agent:${PYTHONPATH:-}"
+cd /usr/share/mariiy_nvr_os/agent || exit 1
+if [ -x /usr/share/mariiy_nvr_os/venv/bin/uvicorn ]; then
+  exec /usr/share/mariiy_nvr_os/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+fi
+exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080

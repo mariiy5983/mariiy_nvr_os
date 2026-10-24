@@ -1,0 +1,21 @@
+[Unit]
+Description=Mariiy NVR Agent (ONVIF / API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=MARIIY_DATA=/var/lib/mariiy_nvr_os
+Environment=MARIIY_RECORD_DIR=/var/lib/mariiy_nvr_os/recordings
+Environment=MARIIY_SNAPSHOT_DIR=/var/lib/mariiy_nvr_os/snapshots
+Environment=MARIIY_GO2RTC_CONFIG=/etc/mariiy_nvr_os/go2rtc.yaml
+Environment=MARIIY_GO2RTC_URL=http://127.0.0.1:1984
+Environment=PYTHONPATH=/usr/share/mariiy_nvr_os/agent
+WorkingDirectory=/usr/share/mariiy_nvr_os/agent
+ExecStart=/usr/share/mariiy_nvr_os/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

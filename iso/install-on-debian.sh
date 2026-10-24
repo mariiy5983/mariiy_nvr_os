@@ -6,7 +6,7 @@
 #   sudo ./iso/install-on-debian.sh
 set -euo pipefail
 
-VERSION="1.0.0-beta.1"
+VERSION="1.0.0"
 OS_NAME="mariiy_nvr_os"
 REPO_RAW="https://raw.githubusercontent.com/mariiy5983/mariiy_nvr_os/main"
 WEB_ROOT="/usr/share/mariiy_nvr_os/web"

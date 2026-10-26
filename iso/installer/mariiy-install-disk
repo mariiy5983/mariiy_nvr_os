@@ -365,7 +365,7 @@ for s in modules sysctl hostname bootmisc syslog fsck root localmount swap loopb
   [ -x "/etc/init.d/$s" ] && rc-update add "$s" boot 2>/dev/null || true
 done
 
-for s in dbus acpid mariiy-go2rtc mariiy-agent mariiy-ui local; do
+for s in dbus acpid open-vm-tools mariiy-go2rtc mariiy-agent mariiy-ui local; do
   [ -x "/etc/init.d/$s" ] && rc-update add "$s" default 2>/dev/null || true
 done
 rc-update del chronyd default 2>/dev/null || true
@@ -423,7 +423,7 @@ for grp in video audio input render tty wheel; do
 done
 passwd -d nvr 2>/dev/null || true
 
-# Firefox Enterprise Policy: disable first-run welcome tabs, telemetry, captive portal
+# Firefox Enterprise Policy: disable first-run welcome tabs, telemetry, captive portal, and password manager/generator
 mkdir -p /usr/lib/firefox/distribution /etc/firefox/policies
 cat >/usr/lib/firefox/distribution/policies.json <<'FFPOL'
 {
@@ -433,6 +433,13 @@ cat >/usr/lib/firefox/distribution/policies.json <<'FFPOL'
     "DisableFirefoxStudies": true,
     "DisablePocket": true,
     "DisableFirefoxAccounts": true,
+    "DisableFormHistory": true,
+    "DisablePasswordReveal": true,
+    "PasswordManagerEnabled": false,
+    "OfferToSaveLogins": false,
+    "OfferToSaveLoginsDefault": false,
+    "AutofillAddressEnabled": false,
+    "AutofillCreditCardEnabled": false,
     "DontCheckDefaultBrowser": true,
     "NoDefaultBookmarks": true,
     "OverrideFirstRunPage": "",
@@ -475,6 +482,15 @@ user_pref("network.captive-portal-service.enabled", false);
 user_pref("network.connectivity-service.enabled", false);
 user_pref("media.autoplay.default", 0);
 user_pref("media.autoplay.blocking_policy", 0);
+user_pref("signon.rememberSignons", false);
+user_pref("signon.generation.enabled", false);
+user_pref("signon.autofillForms", false);
+user_pref("signon.autologin.proxy", false);
+user_pref("signon.formlessCapture.enabled", false);
+user_pref("signon.management.page.breach-alerts.enabled", false);
+user_pref("browser.formfill.enable", false);
+user_pref("extensions.formautofill.addresses.enabled", false);
+user_pref("extensions.formautofill.creditCards.enabled", false);
 FFUSER
 done
 chown -R nvr:nvr /home/nvr 2>/dev/null || true
@@ -502,13 +518,41 @@ xset s off 2>/dev/null || true
 xset s noblank 2>/dev/null || true
 xsetroot -solid '#071018' 2>/dev/null || true
 xhost +local: 2>/dev/null || true
-if command -v xrandr >/dev/null 2>&1; then
-  xrandr --output Virtual-1 --mode 1920x1080 2>/dev/null \
-    || xrandr --output Virtual-1 --mode 1280x800 2>/dev/null \
-    || xrandr -s 1920x1080 2>/dev/null \
-    || xrandr -s 1280x800 2>/dev/null \
-    || true
+
+# Start VMware guest resolution agent if running in VMware
+if command -v vmware-user-suid-wrapper >/dev/null 2>&1; then
+  vmware-user-suid-wrapper 2>/dev/null &
+elif command -v vmware-user >/dev/null 2>&1; then
+  vmware-user 2>/dev/null &
 fi
+
+# Initial auto-adapt to preferred monitor / VM window resolution
+if command -v xrandr >/dev/null 2>&1; then
+  xrandr --auto 2>/dev/null || true
+  # Background watcher: auto-adapt resolution when monitor EDID / VM window size changes
+  (
+    last_pref=""
+    while true; do
+      if [ ! -f /run/mariiy-fixed-res ]; then
+        pref=""
+        for mf in /sys/class/drm/card*-*/modes; do
+          [ -r "$mf" ] || continue
+          m=$(head -n 1 "$mf" 2>/dev/null || true)
+          if [ -n "$m" ]; then
+            pref="$m"
+            break
+          fi
+        done
+        if [ -n "$pref" ] && [ "$pref" != "$last_pref" ]; then
+          last_pref="$pref"
+          xrandr --auto 2>/dev/null || true
+        fi
+      fi
+      sleep 1
+    done
+  ) &
+fi
+
 openbox &
 sleep 1
 exec /usr/sbin/mariiy-nvr-kiosk

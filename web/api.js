@@ -30,11 +30,20 @@
     system() {
       return req("/api/system");
     },
+    logs() {
+      return req("/api/logs");
+    },
+    setResolution(resolution) {
+      return req("/api/system/resolution", { method: "POST", body: JSON.stringify({ resolution: resolution }) });
+    },
     reboot() {
       return req("/api/system/reboot", { method: "POST", body: "{}" });
     },
     poweroff() {
       return req("/api/system/poweroff", { method: "POST", body: "{}" });
+    },
+    factoryReset() {
+      return req("/api/system/factory-reset", { method: "POST", body: "{}" });
     },
     getRemote() {
       return req("/api/remote");
@@ -63,8 +72,17 @@
     ptz(id, action) {
       return req("/api/channels/" + id + "/ptz", { method: "POST", body: JSON.stringify({ action: action }) });
     },
+    snapshots() {
+      return req("/api/snapshots");
+    },
     snapshot(id) {
       return req("/api/channels/" + id + "/snapshot", { method: "POST", body: "{}" });
+    },
+    deleteSnapshot(filename) {
+      return req("/api/snapshots/" + encodeURIComponent(filename), { method: "DELETE" });
+    },
+    recordings() {
+      return req("/api/recordings");
     },
     playerUrl(id, main) {
       const src = "ch" + String(id).padStart(2, "0") + (main ? "_main" : "");

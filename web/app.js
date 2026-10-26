@@ -1,13 +1,3 @@
-const NAMES = [
-  "大門", "大廳", "櫃台", "走廊 A", "走廊 B", "電梯 1", "電梯 2", "樓梯間",
-  "停車場入口", "停車場出口", "停車場 B1", "停車場 B2", "後門", "卸貨區", "倉庫", "機房",
-  "辦公室 1", "辦公室 2", "會議室", "茶水間", "屋頂", "圍牆東", "圍牆西", "周界 1",
-  "周界 2", "店面", "收銀台", "車道", "安全梯", "地下室", "通道", "側門",
-];
-
-const OFFLINE = new Set([7, 15, 24, 32]);
-const ALARM = new Set([9, 22]);
-const IR = new Set([1, 9, 10, 13, 21, 22, 23, 24, 25, 32]);
 const LAYOUT_NAME = {
   1: "單畫面",
   4: "四畫面",
@@ -70,21 +60,17 @@ const LICENSE = "GPLv3";
 const BOOT_AT = Date.now();
 const HARDWARE = {
   model: "Mariiy NVR",
-  board: "Intel N100",
-  cpu: "Intel N100 · 4 核心 4 執行緒",
-  gpu: "Intel UHD · VAAPI",
-  memory: "8 GB",
-  serial: "MNOS-N100-0001",
+  board: "—",
+  cpu: "—",
+  gpu: "—",
+  memory: "—",
+  serial: "—",
 };
 const IDLE_KEY = "nvr-activity";
 const LOCK_KEY = "nvr-locked";
 const FAIL_KEY = "nvr-lock-fails";
 const FAIL_UNTIL_KEY = "nvr-lock-until";
-const DISKS = [
-  { slot: "系統", dev: "nvme0n1", role: "system", size: "128 GB", used: "18 GB", status: "正常" },
-  { slot: "1", dev: "sda", role: "record", size: "4 TB", used: "1.2 TB", status: "正常" },
-  { slot: "2", dev: "sdb", role: "record", size: "4 TB", used: "860 GB", status: "正常" },
-];
+const DISKS = [];
 const PAGE_HINT = {
   playback: "點通道開始回放，時間軸可拖動",
   pictures: "在預覽按抓圖，圖片會留在這裡",
@@ -99,19 +85,17 @@ const SPLITS = [
   [8, 4, 32],
 ];
 
-const channels = NAMES.map((name, index) => {
+const channels = Array.from({ length: 32 }, (_, index) => {
   const id = index + 1;
-  const online = !OFFLINE.has(id);
   return {
     id,
     index,
-    name,
-    online,
-    preview: true,
-    recording: online && id !== 18 && id !== 28,
-    alarm: ALARM.has(id),
-    ir: IR.has(id),
-    shift: (index * 17) % 58,
+    name: `CH${String(id).padStart(2, "0")}`,
+    online: false,
+    preview: false,
+    recording: false,
+    alarm: false,
+    empty: true,
   };
 });
 
@@ -150,7 +134,7 @@ function defaultNetwork() {
 function defaultSystem() {
   return {
     deviceNo: "1",
-    resolution: "1920×1080",
+    resolution: "auto",
     autoReboot: false,
     rebootHour: 3,
     checkUpdate: true,
@@ -241,6 +225,13 @@ const state = {
   sound: defaultSound(),
   firmwareName: "",
   firmwareStatus: `目前 ${VERSION}`,
+  logs: [],
+  recordings: [],
+  cpuPercent: null,
+  memoryMB: null,
+  memoryAvailMB: null,
+  tempC: null,
+  uptimeSec: 0,
   logFilter: "all",
   locked: false,
   agentOnline: false,
@@ -256,7 +247,9 @@ let toastTimer = 0;
 let alarmCursor = 0;
 
 function chLabel(ch) {
-  return `CH${String(ch.id).padStart(2, "0")} ${ch.name}`;
+  const id = `CH${String(ch.id).padStart(2, "0")}`;
+  if (!ch.name || ch.name === id) return id;
+  return `${id} ${ch.name}`;
 }
 
 function nowText() {
@@ -285,20 +278,21 @@ function idleMs() {
 }
 
 function hardwareStats() {
-  const elapsed = Math.max(1, Date.now() - BOOT_AT);
-  const wave = (Math.sin(Date.now() / 5000) + 1) / 2;
-  const cpu = 8 + Math.round(wave * 14);
-  const memUsed = 2.04 + wave * 0.38;
-  const temp = 39 + Math.round(wave * 7);
-  const sec = Math.floor(elapsed / 1000);
+  const sec = Math.max(0, Number(state.uptimeSec) || 0);
   const days = Math.floor(sec / 86400);
   const hours = Math.floor((sec % 86400) / 3600);
   const mins = Math.floor((sec % 3600) / 60);
   const uptime = days ? `${days} 天 ${hours} 小時 ${mins} 分` : `${hours} 小時 ${mins} 分`;
+  const total = state.memoryMB ? `${(state.memoryMB / 1024).toFixed(1)} GB` : HARDWARE.memory;
+  let mem = "—";
+  if (state.memoryMB && state.memoryAvailMB != null) {
+    const used = Math.max(0, state.memoryMB - state.memoryAvailMB) / 1024;
+    mem = `${used.toFixed(2)} GB / ${total}`;
+  }
   return {
-    cpu: `${cpu} %`,
-    mem: `${memUsed.toFixed(2)} GB / ${HARDWARE.memory}`,
-    temp: `${temp} °C`,
+    cpu: state.cpuPercent == null ? "—" : `${state.cpuPercent} %`,
+    mem,
+    temp: state.tempC == null ? "—" : `${state.tempC} °C`,
     uptime,
   };
 }
@@ -355,7 +349,7 @@ function channelAddress(ch) {
   const api = state.apiById[ch.id];
   if (api && api.host) return api.host;
   if (api && api.xaddr) return api.xaddr;
-  return `192.168.1.${20 + ch.index}:80`;
+  return "—";
 }
 
 function saveStore() {
@@ -548,7 +542,7 @@ function renderWall() {
       hold.className = "placeholder";
       hold.innerHTML = ch.online ? iconClosed() : iconOffline();
       const label = document.createElement("span");
-      label.textContent = ch.online ? "預覽已關閉" : "無訊號";
+      label.textContent = ch.online ? "預覽已關閉" : (ch.empty ? "未接入" : "無訊號");
       hold.appendChild(label);
       tile.appendChild(hold);
     }
@@ -585,19 +579,8 @@ function fitWall() {
   const wall = document.getElementById("wall");
   const spec = GRID[Number(wall.dataset.layout)] || GRID[16];
   const [cols, rows] = spec;
-  const gap = 2;
-  const pad = 2;
-  const availW = wall.clientWidth - pad * 2 - gap * (cols - 1);
-  const availH = wall.clientHeight - pad * 2 - gap * (rows - 1);
-  if (availW < cols || availH < rows) return;
-  let cellW = availW / cols;
-  let cellH = cellW * 9 / 16;
-  if (cellH * rows > availH) {
-    cellH = availH / rows;
-    cellW = cellH * 16 / 9;
-  }
-  wall.style.gridTemplateColumns = `repeat(${cols}, ${cellW}px)`;
-  wall.style.gridTemplateRows = `repeat(${rows}, ${cellH}px)`;
+  wall.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  wall.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
 }
 
 function buildScene(ch) {
@@ -616,22 +599,13 @@ function buildScene(ch) {
     wrap.appendChild(frame);
     return wrap;
   }
-  const scene = document.createElement("div");
-  scene.className = "scene";
-  const hue = ch.ir ? 95 : 205 + (ch.id * 11) % 40;
-  scene.style.setProperty("--sky", `hsl(${hue} 22% ${ch.ir ? 14 : 18}%)`);
-  scene.style.setProperty("--ground", `hsl(${hue} 14% 8%)`);
-  scene.style.setProperty("--px", `${28 + (ch.shift % 40)}%`);
-  scene.style.setProperty("--py", `${30 + (ch.id % 5) * 8}%`);
-  scene.style.animationDuration = `${14 + (ch.id % 7)}s`;
-  scene.style.animationDelay = `${-ch.id * 0.65}s`;
-  if (state.zoomed) {
-    const tag = document.createElement("div");
-    tag.className = "sim-tag";
-    tag.textContent = state.agentOnline ? "等待串流" : "模擬畫面";
-    scene.appendChild(tag);
-  }
-  return scene;
+  const hold = document.createElement("div");
+  hold.className = "placeholder";
+  hold.innerHTML = iconOffline();
+  const label = document.createElement("span");
+  label.textContent = "無訊號";
+  hold.appendChild(label);
+  return hold;
 }
 
 async function syncAgent() {
@@ -647,12 +621,25 @@ async function syncAgent() {
     const map = {};
     (data.channels || []).forEach((item) => {
       map[item.id] = item;
-      const local = channels[item.id - 1];
-      if (!local || item.empty) return;
-      if (item.name) local.name = item.name;
+    });
+    channels.forEach((local) => {
+      const item = map[local.id];
+      const id = `CH${String(local.id).padStart(2, "0")}`;
+      if (!item || item.empty) {
+        local.empty = true;
+        local.online = false;
+        local.preview = false;
+        local.recording = false;
+        local.alarm = false;
+        local.name = id;
+        return;
+      }
+      local.empty = false;
+      local.name = item.name || id;
       local.online = Boolean(item.online);
-      if (typeof item.preview === "boolean") local.preview = item.preview;
-      if (typeof item.recording === "boolean") local.recording = item.recording;
+      local.preview = item.preview !== false;
+      local.recording = Boolean(item.recording);
+      local.alarm = Boolean(item.alarm);
     });
     state.apiById = map;
   } catch (_) {
@@ -663,7 +650,15 @@ async function syncAgent() {
     const sys = await MariiyAPI.system();
     if (sys) {
       if (sys.cpu) HARDWARE.cpu = sys.cpu;
+      if (sys.board) HARDWARE.board = sys.board;
+      if (sys.gpu) HARDWARE.gpu = sys.gpu;
+      if (sys.serial) HARDWARE.serial = sys.serial;
       if (sys.memoryMB) HARDWARE.memory = `${Math.max(1, Math.round(sys.memoryMB / 1024))} GB`;
+      state.cpuPercent = sys.cpuPercent == null ? null : sys.cpuPercent;
+      state.memoryMB = sys.memoryMB || null;
+      state.memoryAvailMB = sys.memoryAvailMB == null ? null : sys.memoryAvailMB;
+      state.tempC = sys.tempC == null ? null : sys.tempC;
+      state.uptimeSec = sys.uptimeSec || 0;
       if (sys.network) {
         if (sys.network.ip && sys.network.ip !== "127.0.0.1") state.network.ip = sys.network.ip;
         if (sys.network.mac) state.network.mac = sys.network.mac;
@@ -692,6 +687,18 @@ async function syncAgent() {
         state.remote.linked = true;
         saveStore();
       }
+    }
+  } catch (_) {}
+  try {
+    if (MariiyAPI.logs) {
+      const data = await MariiyAPI.logs();
+      state.logs = Array.isArray(data.logs) ? data.logs : [];
+    }
+  } catch (_) {}
+  try {
+    if (MariiyAPI.recordings) {
+      const data = await MariiyAPI.recordings();
+      state.recordings = Array.isArray(data.recordings) ? data.recordings : [];
     }
   } catch (_) {}
 }
@@ -1040,20 +1047,18 @@ function formatMinute(min) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
 }
 
-function hasRecord(ch) {
-  return Boolean(ch && ch.online && ch.recording);
+function channelRecordings(ch) {
+  if (!ch) return [];
+  const key = `ch${String(ch.id).padStart(2, "0")}`.toLowerCase();
+  return (state.recordings || []).filter((item) => String(item.name || "").toLowerCase().includes(key));
 }
 
-function recordSegments(ch) {
-  if (!hasRecord(ch)) return [];
-  const blocks = ch.id % 2 === 0
-    ? [{ start: 0, end: 1440, kind: "normal" }]
-    : [
-      { start: 0, end: 8 * 60, kind: "normal" },
-      { start: 18 * 60, end: 1440, kind: "normal" },
-    ];
-  if (ch.alarm) blocks.push({ start: 9 * 60 + 20, end: 10 * 60 + 40, kind: "alarm" });
-  return blocks;
+function hasRecord(ch) {
+  return channelRecordings(ch).length > 0;
+}
+
+function recordSegments() {
+  return [];
 }
 
 function paintScene(el, source) {
@@ -1203,21 +1208,18 @@ function renderPlayback() {
   wrap.className = "player-wrap";
   const player = document.createElement("div");
   player.className = "player";
-  if (!hasRecord(ch)) {
+  const files = channelRecordings(ch);
+  if (!files.length) {
     const empty = document.createElement("div");
     empty.className = "player-empty";
-    empty.textContent = ch.online ? "此通道沒有錄影" : "通道離線";
+    empty.textContent = ch.empty ? "此通道尚未接入" : "此通道沒有錄影";
     player.appendChild(empty);
   } else {
-    paintScene(player, ch);
-    const name = document.createElement("div");
-    name.className = "osd-name";
-    name.textContent = chLabel(ch);
-    const clock = document.createElement("div");
-    clock.className = "osd-time";
-    clock.id = "playClock";
-    clock.textContent = formatMinute(state.play.minute);
-    player.append(name, clock);
+    const video = document.createElement("video");
+    video.controls = true;
+    video.autoplay = false;
+    if (typeof MariiyAPI !== "undefined") video.src = MariiyAPI.agent + files[0].url;
+    player.appendChild(video);
   }
   wrap.appendChild(player);
 
@@ -1572,33 +1574,18 @@ function renderLogSettings() {
 }
 
 function systemLogs() {
-  const now = Date.now();
-  const stamp = (mins) => {
-    const date = new Date(now - mins * 60 * 1000);
-    return date.toLocaleString("sv-SE", {
-      timeZone: state.time.zone || "Asia/Taipei",
-      hour12: false,
-    }).replace("T", " ").slice(0, 19);
-  };
-  const list = [
-    { time: stamp(18), level: "資訊", text: `${OS_NAME} ${VERSION} 啟動` },
-    { time: stamp(17), level: "資訊", text: `${HARDWARE.cpu} · 記憶體 ${HARDWARE.memory}` },
-    { time: stamp(16), level: "資訊", text: `時間已與 ${state.time.server || GOOGLE_NTP} 同步成功` },
-    { time: stamp(12), level: "資訊", text: "管理員登入本機" },
-  ];
-  channels.filter((ch) => !ch.online).forEach((ch, index) => {
-    list.push({ time: stamp(9 - index), level: "警告", text: `${chLabel(ch)} 無訊號` });
-  });
-  channels.filter((ch) => ch.alarm).forEach((ch, index) => {
-    list.push({ time: stamp(4 - index), level: "警告", text: `${chLabel(ch)} 警報` });
-  });
-  if (state.remote.linked && state.remote.host) {
-    list.push({ time: stamp(2), level: "資訊", text: `遠端已由手機設定 ${state.remote.host}` });
-  } else {
-    list.push({ time: stamp(2), level: "資訊", text: "遠端尚未用手機設定" });
+  if (state.logs && state.logs.length) {
+    return state.logs.map((item) => ({
+      time: item.time || "",
+      level: item.level || "資訊",
+      text: item.text || "",
+    }));
   }
-  list.sort((a, b) => (a.time < b.time ? 1 : -1));
-  return list;
+  return [{
+    time: nowText(),
+    level: "資訊",
+    text: state.agentOnline ? "系統服務已連線，尚無日誌" : "系統服務未連線",
+  }];
 }
 
 function renderMaintainSettings() {
@@ -1682,7 +1669,7 @@ function renderChannelSettings() {
   const wrap = document.createElement("div");
   const note = state.agentOnline
     ? "Agent 已連線。可搜尋 ONVIF 並加入真實攝影機（子碼流預覽、主碼流單畫面）。"
-    : "Agent 未連線時顯示模擬通道。安裝版開機後會自動啟動 ONVIF Agent 與 go2rtc。";
+    : "系統服務未連線。安裝版開機後會自動啟動 ONVIF 與串流服務。";
   const actions = document.createElement("div");
   actions.className = "form-actions";
   actions.append(
@@ -1903,7 +1890,7 @@ function renderMailSettings() {
   actions.className = "form-actions";
   actions.appendChild(actionButton("測試郵件", "mail-test", "ghost"));
   wrap.append(
-    paneNote("警報和例外可以把通知寄出去。預覽模式不會真的寄信。"),
+    paneNote("警報和例外可以把通知寄出去。這版還沒有寄信服務。"),
     settingRow("啟用郵件", checkField("mailEnabled", mail.enabled)),
     settingRow("SMTP", server),
     settingRow("連接埠", port),
@@ -2175,44 +2162,28 @@ let firmwareTimer = 0;
 
 function startFirmware() {
   state.confirm = null;
+  state.firmwareName = "";
+  state.firmwareStatus = `目前 ${VERSION}`;
   renderChrome();
-  const overlay = document.getElementById("firmware");
-  const bar = document.getElementById("firmwareBar");
-  const text = document.getElementById("firmwareText");
-  overlay.classList.remove("hidden");
-  bar.style.width = "0%";
-  text.textContent = `正在寫入 ${OS_NAME}`;
-  let pct = 0;
-  window.clearTimeout(firmwareTimer);
-  const step = () => {
-    pct += 8;
-    if (pct >= 100) {
-      bar.style.width = "100%";
-      text.textContent = "預覽模式不會寫入系統碟";
-      firmwareTimer = window.setTimeout(() => {
-        overlay.classList.add("hidden");
-        bar.style.width = "0%";
-        state.firmwareName = "";
-        state.firmwareStatus = `目前 ${VERSION}`;
-        toast(`韌體維持 ${VERSION}`);
-        if (state.screen === "settings" && state.settingsTab === "firmware") renderPage();
-      }, 900);
-      return;
-    }
-    bar.style.width = `${pct}%`;
-    text.textContent = `正在寫入 ${OS_NAME}  ${pct}%`;
-    firmwareTimer = window.setTimeout(step, 120);
-  };
-  step();
+  toast("請用新的安裝檔更新系統");
+  if (state.screen === "settings" && state.settingsTab === "firmware") renderPage();
 }
 
 function factoryReset() {
-  channels.forEach((ch, index) => {
-    ch.name = NAMES[index];
-    ch.preview = true;
-    ch.recording = ch.online && ch.id !== 18 && ch.id !== 28;
-    ch.alarm = ALARM.has(ch.id);
+  channels.forEach((ch) => {
+    ch.name = `CH${String(ch.id).padStart(2, "0")}`;
+    ch.online = false;
+    ch.preview = false;
+    ch.recording = false;
+    ch.alarm = false;
+    ch.empty = true;
   });
+  state.apiById = {};
+  state.logs = [];
+  state.recordings = [];
+  if (typeof MariiyAPI !== "undefined" && MariiyAPI.factoryReset) {
+    MariiyAPI.factoryReset().catch(() => {});
+  }
   state.deviceName = "Mariiy NVR";
   state.layout = 16;
   state.bootLayout = 16;
@@ -2391,13 +2362,48 @@ function submitLock(account, password, error, passwordInput) {
   renderChrome();
 }
 
+let wizardBuiltKey = "";
+
+function secretField(dataset, value) {
+  const wrap = document.createElement("div");
+  wrap.className = "pw-wrap";
+  const input = textInput("", value, true);
+  input.type = "password";
+  input.dataset.wizard = dataset;
+  input.autocomplete = "off";
+  input.setAttribute("autocomplete", "off");
+  input.setAttribute("data-lpignore", "true");
+  input.setAttribute("data-1p-ignore", "true");
+  input.setAttribute("data-form-type", "other");
+  input.name = `mariiy-${dataset}`;
+  input.readOnly = true;
+  input.addEventListener("focus", () => {
+    input.readOnly = false;
+  });
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "pw-toggle";
+  toggle.textContent = "顯示";
+  toggle.addEventListener("click", () => {
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    toggle.textContent = show ? "隱藏" : "顯示";
+  });
+  wrap.append(input, toggle);
+  return wrap;
+}
+
 function renderWizard() {
   const root = document.getElementById("wizard");
   root.classList.toggle("hidden", state.setup);
   if (state.setup) {
     root.replaceChildren();
+    wizardBuiltKey = "";
     return;
   }
+  const key = `${state.wizard.step}|${state.wizard.error}`;
+  if (wizardBuiltKey === key && root.firstChild) return;
+  wizardBuiltKey = key;
   const card = document.createElement("div");
   card.className = "wizard-card";
   const title = document.createElement("h2");
@@ -2426,19 +2432,11 @@ function renderWizard() {
 function wizardStepBody() {
   const wrap = document.createElement("div");
   if (state.wizard.step === 0) {
-    const password = textInput("", state.wizard.password, true);
-    password.type = "password";
-    password.dataset.wizard = "password";
-    password.autocomplete = "new-password";
-    const again = textInput("", state.wizard.confirm, true);
-    again.type = "password";
-    again.dataset.wizard = "confirm";
-    again.autocomplete = "new-password";
     wrap.append(
-      paneNote("請設定管理員密碼。本機預覽完成後不用再登入，遠端連線會用這個密碼。"),
+      paneNote("請設定管理員密碼。本機完成設定後不用再登入，遠端連線會用這個密碼。"),
       settingRow("帳號", readOnlyInput("admin")),
-      settingRow("密碼", password),
-      settingRow("確認密碼", again),
+      settingRow("密碼", secretField("password", state.wizard.password)),
+      settingRow("確認密碼", secretField("confirm", state.wizard.confirm)),
     );
     return wrap;
   }
@@ -2607,7 +2605,7 @@ function runSettingsAction(action) {
       MariiyAPI.reboot().catch(() => {});
       return;
     }
-    toast("預覽模式不會重新啟動這台電腦");
+    toast("系統服務未連線，無法重新啟動");
     return;
   }
   if (action === "factory") {
@@ -2713,7 +2711,7 @@ function runSettingsAction(action) {
       toast("請先填郵件伺服器和收件者");
       return;
     }
-    toast("預覽模式不會寄出信件");
+    toast("這版還沒有寄信服務");
     return;
   }
   if (action === "remote-reset") {
@@ -2957,7 +2955,7 @@ function bind() {
       MariiyAPI.poweroff().catch(() => {});
       return;
     }
-    toast("預覽模式不會關閉這台電腦");
+    toast("系統服務未連線，無法關機");
   });
   const wizard = document.getElementById("wizard");
   wizard.addEventListener("click", (event) => {
@@ -2968,6 +2966,12 @@ function bind() {
   wizard.addEventListener("input", (event) => {
     const key = event.target.dataset.wizard;
     if (key === "password" || key === "confirm") state.wizard[key] = event.target.value;
+  });
+  wizard.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || state.setup) return;
+    if (event.target.closest(".pw-toggle")) return;
+    event.preventDefault();
+    wizardNext();
   });
   wizard.addEventListener("change", onPageChange);
 

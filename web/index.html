@@ -13,19 +13,21 @@
         <span class="mark" aria-hidden="true"></span>
         <span id="deviceName">Mariiy NVR</span>
         <span class="version" id="versionLabel">1.0.0</span>
-        <em id="screenName">預覽</em>
+        <em id="screenName">即時監看</em>
       </div>
       <div class="current" id="current"></div>
       <div class="status">
         <button type="button" class="status-btn" id="alarmBtn" title="跳至警報通道">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16h12l-1.2-2V11a4.8 4.8 0 0 0-9.6 0v3L6 16z"/><path d="M10 18a2 2 0 0 0 4 0"/></svg>
-          <span class="badge" id="alarmCount">0</span>
+          <span class="badge empty" id="alarmCount">0</span>
         </button>
         <button type="button" class="pill" id="remotePill" title="遠端設定">
-          <i class="dot ok" id="remoteDot"></i>遠端
+          <i class="dot" id="remoteDot"></i>遠端
         </button>
-        <span class="pill"><i class="dot ok"></i>網路</span>
-        <button type="button" class="pill" id="diskPill" title="錄影碟">
+        <button type="button" class="pill" id="netPill" title="區域網路設定">
+          <i class="dot ok" id="netDot"></i>網路
+        </button>
+        <button type="button" class="pill" id="diskPill" title="硬碟狀態">
           <i class="dot ok" id="diskDot"></i>硬碟
         </button>
         <time class="clock" id="clock"></time>
@@ -98,7 +100,7 @@
       <div class="hint">雙擊單畫面 · 右鍵選單 · 方向鍵翻頁 · Esc 返回</div>
       </div>
       <div class="bar-slot hidden" id="pageTools">
-        <button type="button" class="tool back-live" id="backLive">返回預覽</button>
+        <button type="button" class="tool back-live" id="backLive">返回監看</button>
         <div class="hint" id="pageHint"></div>
       </div>
       <button type="button" class="tool stack" id="menuBtn">
@@ -114,7 +116,7 @@
       <div class="menu-grid">
         <button type="button" class="menu-item on" id="goLive">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>
-          預覽
+          即時監看
         </button>
         <button type="button" class="menu-item" id="goPlayback">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l12-7z"/></svg>

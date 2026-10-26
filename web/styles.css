@@ -36,7 +36,9 @@ button:disabled {
 }
 
 .app {
-  height: 100%;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   animation: fade 0.25s ease;
@@ -227,13 +229,15 @@ button.pill:hover { color: #fff; }
 
 .wall {
   flex: 1;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   display: grid;
   gap: 2px;
   padding: 2px;
   background: #000;
-  place-content: center;
+  place-content: stretch;
 }
 
 .tile {
@@ -752,15 +756,20 @@ button.pill:hover { color: #fff; }
 .viewer-frame,
 .thumb {
   position: relative;
-  background:
-    radial-gradient(ellipse at 40% 40%, rgba(150, 186, 210, 0.2), transparent 46%),
-    linear-gradient(165deg, var(--sky, #1a2a36), #0c141c 58%, var(--ground, #101610));
+  background: #05080c;
   overflow: hidden;
 }
 
 .player {
-  width: min(100cqw, calc(100cqh * 16 / 9));
-  aspect-ratio: 16 / 9;
+  width: 100%;
+  height: 100%;
+}
+
+.player video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
 }
 
 .player-empty {
@@ -1030,10 +1039,33 @@ button.pill:hover { color: #fff; }
 
 .wizard-card {
   width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
   padding: 22px 22px 18px;
   background: #102536;
   border: 1px solid #2a6494;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
+.pw-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pw-toggle {
+  height: 30px;
+  padding: 0 10px;
+  background: #10283c;
+  border: 1px solid #1e5278;
+  color: #c5d9ea;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pw-toggle:hover {
+  background: #16344c;
+  color: #fff;
 }
 
 .wizard-card h2 { margin: 0 0 6px; font-size: 18px; letter-spacing: 0.12em; }
@@ -1148,6 +1180,32 @@ button.pill:hover { color: #fff; }
 }
 
 input, select { user-select: text; }
+
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
+
+.pw-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pw-toggle {
+  height: 30px;
+  padding: 0 10px;
+  background: #10283c;
+  border: 1px solid #1e5278;
+  color: #b7cde0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pw-toggle:hover {
+  background: #163a56;
+  color: #fff;
+}
 
 @media (max-width: 1100px) {
   .hint { display: none; }

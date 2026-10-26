@@ -65,6 +65,9 @@ echo "  net: $(ls -1 /sys/class/net 2>/dev/null | tr '\n' ' ')"
 
 dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null || true
 rc-service dbus start 2>/dev/null || true
+if is_vmware; then
+  rc-service open-vm-tools start 2>/dev/null || /usr/bin/vmtoolsd -b /run/vmtoolsd.pid 2>/dev/null || true
+fi
 rc-service mariiy-go2rtc start 2>/dev/null || true
 rc-service mariiy-agent start 2>/dev/null || true
 rc-service mariiy-ui start 2>/dev/null || true
@@ -93,10 +96,6 @@ Section "Screen"
 	Identifier "Screen0"
 	Device "Card0"
 	DefaultDepth 24
-	SubSection "Display"
-		Depth 24
-		Modes "1920x1080" "1280x800" "1280x720" "1024x768"
-	EndSubSection
 EndSection
 EOF
   rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true

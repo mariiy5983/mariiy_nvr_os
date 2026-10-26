@@ -12,6 +12,7 @@ from pathlib import Path
 from .config import OS_NAME, RECORD_DIR, VERSION
 
 BOOT_AT = time.time()
+_LAST_CPU_STAT: tuple[int, int] | None = None
 
 
 def _read(path: str | Path) -> str:
@@ -19,6 +20,28 @@ def _read(path: str | Path) -> str:
         return Path(path).read_text(encoding="utf-8", errors="ignore")
     except Exception:
         return ""
+
+
+def _cpu_percent() -> int:
+    global _LAST_CPU_STAT
+    stat_text = _read("/proc/stat")
+    for line in stat_text.splitlines():
+        if line.startswith("cpu "):
+            parts = [int(x) for x in line.split()[1:9] if x.isdigit()]
+            if len(parts) >= 4:
+                idle = parts[3] + (parts[4] if len(parts) > 4 else 0)
+                total = sum(parts)
+                if _LAST_CPU_STAT is not None:
+                    prev_idle, prev_total = _LAST_CPU_STAT
+                    d_total = total - prev_total
+                    d_idle = idle - prev_idle
+                    _LAST_CPU_STAT = (idle, total)
+                    if d_total > 0:
+                        return max(1, min(100, round((1.0 - d_idle / d_total) * 100)))
+                else:
+                    _LAST_CPU_STAT = (idle, total)
+            break
+    return 5
 
 
 def _human_gb(num_bytes: int) -> str:
@@ -71,7 +94,6 @@ def _collect_disks() -> list[dict]:
                 except Exception:
                     used_bytes = 0
             else:
-                # Check if any partition of this disk is mounted, or mount MARIIY_REC automatically
                 mounted_path = ""
                 for mline in _read("/proc/mounts").splitlines():
                     mparts = mline.split()
@@ -79,7 +101,6 @@ def _collect_disks() -> list[dict]:
                         mounted_path = mparts[1]
                         break
                 if not mounted_path and os.name != "nt":
-                    # Try mounting largest partition on RECORD_DIR if RECORD_DIR is not a mountpoint
                     part_candidates = sorted(
                         entry.glob(f"{name}*"),
                         key=lambda p: int(_read(p / "size").strip() or "0") if (p / "size").exists() else 0,
@@ -139,12 +160,18 @@ def _collect_disks() -> list[dict]:
     return disks
 
 
+def _cidr_to_netmask(prefix: int) -> str:
+    mask = (0xFFFFFFFF >> (32 - prefix)) << (32 - prefix)
+    return f"{(mask >> 24) & 0xFF}.{(mask >> 16) & 0xFF}.{(mask >> 8) & 0xFF}.{mask & 0xFF}"
+
+
 def _collect_network() -> dict:
     ip = "127.0.0.1"
-    mac = "02:4E:56:52:00:01"
-    gateway = "192.168.1.1"
+    mac = "00:00:00:00:00:00"
+    gateway = ""
     mask = "255.255.255.0"
     iface = ""
+    dns_list: list[str] = []
 
     net_dir = Path("/sys/class/net")
     if net_dir.is_dir():
@@ -158,21 +185,29 @@ def _collect_network() -> dict:
                 break
 
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(0.5)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
+        out = subprocess.check_output(["ip", "-4", "-o", "addr", "show"], text=True, timeout=2)
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1] != "lo":
+                for idx, tok in enumerate(parts):
+                    if tok == "inet" and idx + 1 < len(parts):
+                        cidr = parts[idx + 1]
+                        ip = cidr.split("/")[0]
+                        if "/" in cidr:
+                            try:
+                                mask = _cidr_to_netmask(int(cidr.split("/")[1]))
+                            except ValueError:
+                                pass
+                        break
+                if ip != "127.0.0.1":
+                    break
     except Exception:
         try:
-            out = subprocess.check_output(["ip", "-4", "-o", "addr", "show"], text=True, timeout=2)
-            for line in out.splitlines():
-                parts = line.split()
-                if len(parts) >= 4 and parts[1] != "lo":
-                    for idx, tok in enumerate(parts):
-                        if tok == "inet" and idx + 1 < len(parts):
-                            ip = parts[idx + 1].split("/")[0]
-                            break
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.5)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
         except Exception:
             pass
 
@@ -186,7 +221,22 @@ def _collect_network() -> dict:
     except Exception:
         pass
 
-    return {"ip": ip, "mask": mask, "gateway": gateway, "mac": mac, "iface": iface}
+    for line in _read("/etc/resolv.conf").splitlines():
+        line = line.strip()
+        if line.startswith("nameserver"):
+            parts = line.split()
+            if len(parts) >= 2:
+                dns_list.append(parts[1])
+
+    return {
+        "ip": ip,
+        "mask": mask,
+        "gateway": gateway or (ip.rsplit(".", 1)[0] + ".1" if "." in ip and not ip.startswith("127.") else "192.168.1.1"),
+        "dns1": dns_list[0] if len(dns_list) > 0 else "8.8.8.8",
+        "dns2": dns_list[1] if len(dns_list) > 1 else "1.1.1.1",
+        "mac": mac,
+        "iface": iface,
+    }
 
 
 def collect() -> dict:
@@ -199,20 +249,37 @@ def collect() -> dict:
             mem_avail = int(line.split()[1]) // 1024
 
     cpu_model = platform.processor() or platform.machine()
+    cpu_cores = os.cpu_count() or 1
     cpuinfo = _read("/proc/cpuinfo")
     for line in cpuinfo.splitlines():
         if line.startswith("model name"):
             cpu_model = line.split(":", 1)[1].strip()
             break
 
-    temp_c = 40
-    for tz in Path("/sys/class/thermal").glob("thermal_zone*/temp") if Path("/sys/class/thermal").is_dir() else []:
-        raw = _read(tz).strip()
-        if raw.isdigit() and int(raw) > 0:
-            temp_c = round(int(raw) / 1000)
-            break
+    board = _read("/sys/class/dmi/id/product_name").strip() or _read("/sys/class/dmi/id/board_name").strip() or platform.machine()
+    vendor = _read("/sys/class/dmi/id/sys_vendor").strip()
+    if vendor and vendor.lower() not in board.lower():
+        board = f"{vendor} {board}".strip()
+
+    serial = (
+        _read("/etc/machine-id").strip()[:16].upper()
+        or _read("/sys/class/dmi/id/product_uuid").strip()[:16].upper()
+        or "MNOS-1000"
+    )
+
+    temp_c = None
+    if Path("/sys/class/thermal").is_dir():
+        for tz in Path("/sys/class/thermal").glob("thermal_zone*/temp"):
+            raw = _read(tz).strip()
+            if raw.isdigit() and int(raw) > 0:
+                temp_c = round(int(raw) / 1000)
+                break
 
     vaapi = Path("/dev/dri/renderD128").exists()
+    gpu = "VAAPI 硬體加速 (/dev/dri/renderD128)" if vaapi else "KMS / DRM 顯示"
+    if "vmware" in board.lower():
+        gpu = "VMware SVGA II (KMS)"
+
     uptime = int(time.time() - BOOT_AT)
     up_raw = _read("/proc/uptime").split()
     if up_raw:
@@ -226,7 +293,11 @@ def collect() -> dict:
         "osName": OS_NAME,
         "version": VERSION,
         "platform": platform.platform(),
-        "cpu": cpu_model,
+        "board": board,
+        "cpu": f"{cpu_model} ({cpu_cores} 核心)",
+        "cpuPercent": _cpu_percent(),
+        "gpu": gpu,
+        "serial": serial,
         "tempC": temp_c,
         "memoryMB": mem_total,
         "memoryAvailMB": mem_avail,
